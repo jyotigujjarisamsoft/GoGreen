@@ -23,7 +23,10 @@ def execute(filters=None):
 	customer_details = fetching_customer_details(grand_parent,customer_type)
 	columns = get_columns()
 	for customers in customer_details:
-		data.append([customers['customer_name'],customers['customer_typee'],customers['grand_parent'],customers['rate']
+		data.append([customers['customer_name'],
+		customers['custom_customer_typee'],
+		customers['custom_grand_parent'],
+		customers['custom_rate']
 			])
 	return columns, data
 
@@ -41,8 +44,8 @@ def create_sales_invoice(grand_parent,customer_type,posting_date):
 		print("tax_template_data",tax_template_data)
 		default_tax_data=[]
 		for tax in tax_template_data:
-    		# Check if the name key in the dictionary matches 'UAE VAT 5% - MSPL'
-			if tax.get('name') == 'UAE VAT 5% - MSPL':
+    		# Check if the name key in the dictionary matches 'UAE VAT 5% - GG'
+			if tax.get('name') == 'UAE VAT 5% - GG':
         		# Store the dictionary if a match is found
 				default_tax_data = tax
 		print("default_tax_data",default_tax_data)
@@ -51,7 +54,7 @@ def create_sales_invoice(grand_parent,customer_type,posting_date):
 		"customer": customer_name,
 		"posting_date":posting_date,
 		"due_date":posting_date,
-		"taxes_and_charges":"UAE VAT 5% - MSPL",
+		"taxes_and_charges":"UAE VAT 5% - GG",
 		"items": [],
 		"taxes":[]
 		}
@@ -59,7 +62,7 @@ def create_sales_invoice(grand_parent,customer_type,posting_date):
 		innerJson = {
 			"item_code":"Services",
 			"qty":1,
-			"rate":customer_data['rate'],
+			"rate":customer_data['custom_rate'],
 			"doctype": "Sales Invoice Item"
 			}
 		taxes_details={
@@ -85,7 +88,8 @@ def create_sales_invoice(grand_parent,customer_type,posting_date):
 					doc_new_SI.submit()
 					print("=============================")
 					frappe.msgprint("Sales Invoice created succesfully")
-					break
+				else:
+					frappe.throw("Please update rate in customer master for this customer "+'"'+customer_name+'"'+ " ")
 		else:
 			frappe.throw("Please update rate in customer master for this customer "+'"'+customer_name+'"'+ " ")
 	          
@@ -93,10 +97,11 @@ def create_sales_invoice(grand_parent,customer_type,posting_date):
 
 			
 def fetching_customer_details(grand_parent,customer_type):
-	customer_data = frappe.db.sql("""select customer_name,customer_typee,grand_parent,rate
-	from `tabCustomer` where grand_parent in (select customer_group_name from `tabCustomer Group` 
-	where parent='"""+grand_parent+"""' or grand_parent='"""+grand_parent+"""' ) and 
-	customer_typee='"""+customer_type+"""' and status="Active"
+	customer_data = frappe.db.sql("""
+	select customer_name,custom_customer_typee,custom_grand_parent,custom_rate
+	from `tabCustomer` where custom_grand_parent in (select name from `tabCustomer Group` 
+	where parent_customer_group='"""+grand_parent+"""' or customer_group_name='"""+grand_parent+"""')  and 
+	custom_customer_typee='"""+customer_type+"""' and custom_status="Active"
 	 """, as_dict=1)
 	print("customer_data",customer_data)
 	print("customer_type",customer_type)

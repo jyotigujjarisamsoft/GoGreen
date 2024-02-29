@@ -56,7 +56,7 @@ frappe.query_reports["sales invoice report"] = {
 
 function create_multiple_sales_invoices(grand_parent,customer_type,posting_date) {
     frappe.call({
-        method: 'shark.shark.report.sales_invoice_report.sales_invoice_report.create_sales_invoice',
+        method: 'gogreen.gogreen.report.sales_invoice_report.sales_invoice_report.create_sales_invoice',
         args: {
             "grand_parent":grand_parent,
 			"customer_type":customer_type,
