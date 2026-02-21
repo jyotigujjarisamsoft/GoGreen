@@ -1,7 +1,7 @@
 import frappe
 from twilio.rest import Client
 
-@frappe.whitelist(allow_guest=False)
+@frappe.whitelist(allow_guest=True)
 def create_or_update_customer():
     try:
         import json
