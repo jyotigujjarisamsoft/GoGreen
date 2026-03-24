@@ -165,3 +165,139 @@ def create_or_update_customer():
             "status": "error",
             "message": str(e)
         }
+        
+@frappe.whitelist(allow_guest=True)
+def create_sales_invoice():
+    import frappe
+
+    try:
+        data = frappe.request.json
+
+        customer = data.get("ledger_name")
+        invoice_no_old = data.get("invoice_no_old")
+        posting_date = data.get("invoice_date")
+        billed_period = data.get("billed_period")
+        company = data.get("company")
+        invoice_status = data.get("invoice_status")
+
+        paid_amount = float(data.get("paid_amount", 0))
+        paid_date = data.get("paid_date")
+
+        items = data.get("items")
+
+        if not customer or not company or not items:
+            frappe.throw("customer, company and items are required")
+
+        # -------------------------
+        # Fetch Customer Dimensions
+        # -------------------------
+        customer_data = frappe.db.get_value(
+            "Customer",
+            customer,
+            [
+                "custom_cluster",
+                "custom_tower",
+                "custom_parent_name",
+                "custom_grandparent_name",
+                "custom_greatgrandparent_name"
+            ],
+            as_dict=True
+        )
+
+        # -------------------------
+        # Create Sales Invoice
+        # -------------------------
+        si = frappe.new_doc("Sales Invoice")
+        si.customer = customer
+        si.company = company
+        si.posting_date = posting_date
+        si.custom_invoice_status = invoice_status
+        si.custom_invoice_no_old = invoice_no_old
+        si.custom_billed_period = billed_period
+
+        # Sales Tax Template
+        si.taxes_and_charges = "UAE VAT 5% - GG"
+        si.append("taxes", {
+    "charge_type": "On Net Total",
+    "account_head": "VAT 5% - GG",
+    "description": "VAT 5%",
+    "rate": 5.0,
+    "included_in_print_rate": 0
+    
+})
+
+        # -------------------------
+        # Set Accounting Dimensions
+        # -------------------------
+        if customer_data:
+            si.cluster = customer_data.get("custom_cluster")
+            si.tower = customer_data.get("custom_tower")
+            si.parent_name = customer_data.get("custom_parent_name")
+            si.grandparent_name = customer_data.get("custom_grandparent_name")
+            si.greatgrandparent_name = customer_data.get("custom_greatgrandparent_name")
+
+        # -------------------------
+        # Add Items
+        # -------------------------
+        for d in items:
+            si.append("items", {
+                "item_code": d.get("item_code"),
+                "qty": d.get("qty", 1),
+                "rate": d.get("rate", 0)
+            })
+
+        si.insert(ignore_permissions=True)
+        si.submit()
+
+        payment_entry_name = None
+
+        # -------------------------
+        # Create Payment Entry
+        # -------------------------
+        if paid_amount > 0:
+
+            paid_to_account = frappe.db.get_value(
+                "Company",
+                company,
+                "default_cash_account"
+            )
+
+            pe = frappe.new_doc("Payment Entry")
+            pe.payment_type = "Receive"
+            pe.party_type = "Customer"
+            pe.party = customer
+            pe.company = company
+
+            pe.posting_date = paid_date if paid_date else posting_date
+            pe.mode_of_payment = "Cash"
+
+            pe.paid_to = paid_to_account
+
+            pe.paid_amount = paid_amount
+            pe.received_amount = paid_amount
+
+            # Link Sales Invoice
+            pe.append("references", {
+                "reference_doctype": "Sales Invoice",
+                "reference_name": si.name,
+                "total_amount": si.grand_total,
+                "allocated_amount": paid_amount
+            })
+
+            pe.insert(ignore_permissions=True)
+            pe.submit()
+
+            payment_entry_name = pe.name
+
+        return {
+            "status": "success",
+            "sales_invoice": si.name,
+            "payment_entry": payment_entry_name
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Create SI API")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
