@@ -171,7 +171,7 @@ def create_sales_invoice():
     import frappe
 
     try:
-        data = frappe.request.json
+        data = json.loads(frappe.request.data or "{}")
 
         ledger_name = data.get("ledger_name")
         customer = frappe.db.get_value(
