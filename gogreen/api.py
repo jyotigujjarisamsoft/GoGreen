@@ -173,7 +173,12 @@ def create_sales_invoice():
     try:
         data = frappe.request.json
 
-        customer = data.get("ledger_name")
+        ledger_name = data.get("ledger_name")
+        customer = frappe.db.get_value(
+    "Customer",
+    {"custom_ledger_name": ledger_name},
+    "name"
+)
         invoice_no_old = data.get("invoice_no_old")
         posting_date = data.get("invoice_date")
         billed_period = data.get("billed_period")
