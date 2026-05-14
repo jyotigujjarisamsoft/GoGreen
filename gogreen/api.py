@@ -169,16 +169,19 @@ def create_or_update_customer():
 @frappe.whitelist(allow_guest=True)
 def create_sales_invoice():
     import frappe
+    import json
 
     try:
         data = json.loads(frappe.request.data or "{}")
 
-        ledger_name = data.get("ledger_name")
+        ledger_id = data.get("ledger_id")
+
         customer = frappe.db.get_value(
-    "Customer",
-    {"custom_ledger_name": ledger_name},
-    "name"
-)
+            "Customer",
+            {"custom_id": ledger_id},
+            "name"
+        )
+
         invoice_no_old = data.get("invoice_no_old")
         posting_date = data.get("invoice_date")
         billed_period = data.get("billed_period")
@@ -222,14 +225,14 @@ def create_sales_invoice():
 
         # Sales Tax Template
         si.taxes_and_charges = "UAE VAT 5% - GG"
+
         si.append("taxes", {
-    "charge_type": "On Net Total",
-    "account_head": "VAT 5% - GG",
-    "description": "VAT 5%",
-    "rate": 5.0,
-    "included_in_print_rate": 0
-    
-})
+            "charge_type": "On Net Total",
+            "account_head": "VAT 5% - GG",
+            "description": "VAT 5%",
+            "rate": 5.0,
+            "included_in_print_rate": 0
+        })
 
         # -------------------------
         # Set Accounting Dimensions
