@@ -175,6 +175,7 @@ def create_sales_invoice():
         data = json.loads(frappe.request.data or "{}")
 
         ledger_id = data.get("ledger_id")
+        zoho_invoice_id = data.get("zoho_invoice_id")
 
         customer = frappe.db.get_value(
             "Customer",
@@ -222,6 +223,7 @@ def create_sales_invoice():
         si.custom_invoice_status = invoice_status
         si.custom_invoice_no_old = invoice_no_old
         si.custom_billed_period = billed_period
+        si.custom_zoho_invoice_id = zoho_invoice_id
 
         # Sales Tax Template
         si.taxes_and_charges = "UAE VAT 5% - GG"
@@ -257,50 +259,12 @@ def create_sales_invoice():
         si.insert(ignore_permissions=True)
         si.submit()
 
-        payment_entry_name = None
-
-        # -------------------------
-        # Create Payment Entry
-        # -------------------------
-        if paid_amount > 0:
-
-            paid_to_account = frappe.db.get_value(
-                "Company",
-                company,
-                "default_cash_account"
-            )
-
-            pe = frappe.new_doc("Payment Entry")
-            pe.payment_type = "Receive"
-            pe.party_type = "Customer"
-            pe.party = customer
-            pe.company = company
-
-            pe.posting_date = paid_date if paid_date else posting_date
-            pe.mode_of_payment = "Cash"
-
-            pe.paid_to = paid_to_account
-
-            pe.paid_amount = paid_amount
-            pe.received_amount = paid_amount
-
-            # Link Sales Invoice
-            pe.append("references", {
-                "reference_doctype": "Sales Invoice",
-                "reference_name": si.name,
-                "total_amount": si.grand_total,
-                "allocated_amount": paid_amount
-            })
-
-            pe.insert(ignore_permissions=True)
-            pe.submit()
-
-            payment_entry_name = pe.name
+        
 
         return {
             "status": "success",
-            "sales_invoice": si.name,
-            "payment_entry": payment_entry_name
+            "sales_invoice": si.name
+           
         }
 
     except Exception as e:
