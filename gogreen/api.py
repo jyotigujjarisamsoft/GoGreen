@@ -273,3 +273,248 @@ def create_sales_invoice():
             "status": "error",
             "message": str(e)
         }
+        
+@frappe.whitelist(allow_guest=True)
+def create_payment_entry():
+    import frappe
+    import json
+    from frappe.utils import flt, getdate
+
+    try:
+
+        # ------------------------------------------------
+        # IMPORTANT
+        # ------------------------------------------------
+        frappe.set_user("Administrator")
+
+        # ------------------------------------------------
+        # Read Payload
+        # ------------------------------------------------
+        data = json.loads(frappe.request.data or "{}")
+
+        ledger_id = data.get("ledger_id")
+
+        customer = frappe.db.get_value(
+            "Customer",
+            {"custom_id": ledger_id},
+            "name"
+        )
+
+        if not customer:
+            return {
+                "status": "error",
+                "message": f"Customer not found for ledger_id: {ledger_id}"
+            }
+
+        # ------------------------------------------------
+        # Fetch Customer Master Details
+        # ------------------------------------------------
+        customer_data = frappe.db.get_value(
+            "Customer",
+            customer,
+            [
+                "custom_cluster",
+                "custom_tower",
+                "custom_parent_name",
+                "custom_grandparent_name",
+                "custom_greatgrandparent_name"
+            ],
+            as_dict=True
+        )
+
+        company = data.get("company")
+        posting_date = data.get("posting_date")
+
+        invoices = data.get("sales_invoices", [])
+
+        if not invoices:
+            return {
+                "status": "error",
+                "message": "sales_invoices array is required"
+            }
+
+        # ------------------------------------------------
+        # Get Company Default Cash Account
+        # ------------------------------------------------
+        paid_to_account = frappe.db.get_value(
+            "Company",
+            company,
+            "default_cash_account"
+        )
+
+        if not paid_to_account:
+            return {
+                "status": "error",
+                "message": "Default Cash Account not found in Company"
+            }
+
+        # ------------------------------------------------
+        # Currency Details
+        # ------------------------------------------------
+        account_currency = frappe.db.get_value(
+            "Account",
+            paid_to_account,
+            "account_currency"
+        )
+
+        company_currency = frappe.db.get_value(
+            "Company",
+            company,
+            "default_currency"
+        )
+
+        # ------------------------------------------------
+        # Create Payment Entry
+        # ------------------------------------------------
+        pe = frappe.new_doc("Payment Entry")
+
+        pe.flags.ignore_permissions = True
+        pe.flags.ignore_mandatory = True
+
+        pe.payment_type = "Receive"
+        pe.party_type = "Customer"
+        pe.party = customer
+        pe.company = company
+
+        pe.posting_date = getdate(posting_date)
+
+        pe.mode_of_payment = data.get("mode_of_payment") or "Cash"
+
+        pe.paid_to = paid_to_account
+
+        pe.paid_to_account_currency = account_currency
+        pe.target_exchange_rate = 1
+
+        # ------------------------------------------------
+        # Autofill Custom Fields from Customer
+        # ------------------------------------------------
+        if customer_data:
+
+            pe.cluster = customer_data.get(
+                "custom_cluster"
+            )
+
+            pe.tower = customer_data.get(
+                "custom_tower"
+            )
+
+            pe.parent_name = customer_data.get(
+                "custom_parent_name"
+            )
+
+            pe.grandparent_name = customer_data.get(
+                "custom_grandparent_name"
+            )
+
+            pe.greatgrandparent_name = customer_data.get(
+                "custom_greatgrandparent_name"
+            )
+
+        total_paid_amount = 0
+        receivable_account = None
+
+        # ------------------------------------------------
+        # Process Sales Invoices
+        # ------------------------------------------------
+        for inv in invoices:
+
+            zoho_invoice_id = inv.get(
+                "custom_zoho_invoice_id"
+            )
+
+            allocated_amount = flt(
+                inv.get("allocated_amount")
+            )
+
+            if not zoho_invoice_id:
+                continue
+
+            # ------------------------------------------------
+            # Fetch Sales Invoice
+            # ------------------------------------------------
+            sales_invoice = frappe.db.get_value(
+                "Sales Invoice",
+                {
+                    "custom_zoho_invoice_id": zoho_invoice_id
+                },
+                "name"
+            )
+
+            if not sales_invoice:
+                frappe.throw(
+                    f"Sales Invoice not found for Zoho Invoice ID: {zoho_invoice_id}"
+                )
+
+            si = frappe.get_doc(
+                "Sales Invoice",
+                sales_invoice
+            )
+
+            if si.docstatus != 1:
+                frappe.throw(
+                    f"Sales Invoice {sales_invoice} is not submitted"
+                )
+
+            # ------------------------------------------------
+            # Receivable Account
+            # ------------------------------------------------
+            if not receivable_account:
+                receivable_account = si.debit_to
+
+            total_paid_amount += allocated_amount
+
+            # ------------------------------------------------
+            # Add References
+            # ------------------------------------------------
+            pe.append("references", {
+                "reference_doctype": "Sales Invoice",
+                "reference_name": si.name,
+                "due_date": si.due_date,
+                "total_amount": si.grand_total,
+                "outstanding_amount": si.outstanding_amount,
+                "allocated_amount": allocated_amount
+            })
+
+        # ------------------------------------------------
+        # Source Account
+        # ------------------------------------------------
+        pe.paid_from = receivable_account
+
+        pe.paid_from_account_currency = company_currency
+
+        pe.source_exchange_rate = 1
+
+        # ------------------------------------------------
+        # Amounts
+        # ------------------------------------------------
+        pe.paid_amount = total_paid_amount
+        pe.received_amount = total_paid_amount
+
+        # ------------------------------------------------
+        # SAVE ONLY
+        # ------------------------------------------------
+        pe.insert(ignore_permissions=True)
+
+        frappe.db.commit()
+
+        return {
+            "status": "success",
+            "payment_entry": pe.name,
+            "customer": customer,
+            "docstatus": pe.docstatus,
+            "total_paid_amount": total_paid_amount
+        }
+
+    except Exception as e:
+
+        frappe.db.rollback()
+
+        frappe.log_error(
+            frappe.get_traceback(),
+            "Create Payment Entry API"
+        )
+
+        return {
+            "status": "error",
+            "message": str(e)
+        }
