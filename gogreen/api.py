@@ -489,6 +489,8 @@ def create_payment_entry():
         # ------------------------------------------------
         pe.paid_amount = total_paid_amount
         pe.received_amount = total_paid_amount
+        pe.reference_no="AUTO-REF"
+        pe.reference_date=getdate(posting_date)
 
         # ------------------------------------------------
         # SAVE ONLY
