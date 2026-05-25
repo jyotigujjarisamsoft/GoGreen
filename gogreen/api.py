@@ -226,11 +226,11 @@ def create_sales_invoice():
         si.custom_zoho_invoice_id = zoho_invoice_id
 
         # Sales Tax Template
-        si.taxes_and_charges = "UAE VAT 5% - GGCS"
+        si.taxes_and_charges = "UAE VAT 5% - GG"
 
         si.append("taxes", {
             "charge_type": "On Net Total",
-            "account_head": "VAT 5% - GGCS",
+            "account_head": "VAT 5% - GG",
             "description": "VAT 5%",
             "rate": 5.0,
             "included_in_print_rate": 0
