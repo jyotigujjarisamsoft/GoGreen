@@ -12,7 +12,7 @@ def create_or_update_customer():
         # ==========================================================
         # FIELDS (ONLY WHAT YOU REQUESTED)
         # ==========================================================
-        customer_id = reqData.get("customer_id")
+        #customer_id = reqData.get("customer_id")
         customer_name = cstr(reqData.get("customer_name")).strip()
         customer_type = reqData.get("type") or "Individual"
 
@@ -48,6 +48,11 @@ def create_or_update_customer():
         custom_new_mobile_no_text = reqData.get("custom_new_mobile_no_text")
         custom_id = reqData.get("custom_id")
         custom_type_of_customer = reqData.get("custom_type_of_customer")
+        customer_id = frappe.db.get_value(
+    "Customer",
+    {"custom_id": custom_id},
+    "name"
+)
 
         # ==========================================================
         # UPDATE CUSTOMER
@@ -65,7 +70,7 @@ def create_or_update_customer():
             doc.custom_status = custom_status
             doc.custom_balance_updated_date = custom_balance_updated_date
             doc.custom_car_make = custom_car_make
-            doc.custom_license_plate_no = custom_license_plate_no
+            doc.custom_license_plate = custom_license_plate_no
             doc.custom_weekdays = custom_weekdays
             doc.custom_grandparent_name = custom_grandparent_name
             doc.custom_parent_name = custom_parent_name
@@ -119,7 +124,7 @@ def create_or_update_customer():
                 "custom_status": custom_status,
                 "custom_balance_updated_date": custom_balance_updated_date,
                 "custom_car_make": custom_car_make,
-                "custom_license_plate_no": custom_license_plate_no,
+                "custom_license_plate": custom_license_plate_no,
                 "custom_weekdays": custom_weekdays,
                 "custom_grandparent_name": custom_grandparent_name,
                 "custom_parent_name": custom_parent_name,
