@@ -74,8 +74,8 @@ def create_or_update_customer():
             doc.custom_weekdays = custom_weekdays
             doc.custom_grandparent_name = custom_grandparent_name
             doc.custom_parent_name = custom_parent_name
-            doc.custom_tower = custom_tower
-            doc.custom_cluster = custom_cluster
+            doc.custom_tower_name = custom_tower
+            doc.custom_cluster_name = custom_cluster
             doc.custom_greatgrandparent_name = custom_greatgrandparent_name
             doc.custom_ledger_name = custom_ledger_name
             doc.custom_new_mobile_no = custom_new_mobile_no
@@ -128,8 +128,8 @@ def create_or_update_customer():
                 "custom_weekdays": custom_weekdays,
                 "custom_grandparent_name": custom_grandparent_name,
                 "custom_parent_name": custom_parent_name,
-                "custom_tower": custom_tower,
-                "custom_cluster": custom_cluster,
+                "custom_tower_name": custom_tower,
+                "custom_cluster_name": custom_cluster,
                 "custom_greatgrandparent_name": custom_greatgrandparent_name,
                 "custom_ledger_name": custom_ledger_name,
                 "custom_new_mobile_no": custom_new_mobile_no,
