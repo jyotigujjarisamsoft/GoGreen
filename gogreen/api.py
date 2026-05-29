@@ -506,11 +506,11 @@ def create_payment_entry():
         if customer_data:
 
             pe.cluster = customer_data.get(
-                "custom_cluster_name"
+                "custom_cluster"
             )
 
             pe.tower = customer_data.get(
-                "custom_tower_name"
+                "custom_tower"
             )
 
             pe.parent_name = customer_data.get(
@@ -642,70 +642,112 @@ def update_sales_invoice():
     import json
 
     try:
+
+        frappe.set_user("Administrator")
+
+        # =====================================================
+        # READ REQUEST DATA
+        # =====================================================
         data = json.loads(frappe.request.data or "{}")
 
         ledger_id = data.get("ledger_id")
         zoho_invoice_id = data.get("zoho_invoice_id")
+
         custom_invoice_no = data.get("invoice_no")
         custom_zoho_invoice_no = data.get("zoho_invoice_no")
 
-        customer = frappe.db.get_value(
-            "Customer",
-            {"custom_id": ledger_id},
-            "name"
-        )
-
         invoice_no_old = data.get("invoice_no_old")
+
         posting_date = data.get("invoice_date")
         billed_period = data.get("billed_period")
+
         company = data.get("company")
         invoice_status = data.get("invoice_status")
 
         paid_amount = float(data.get("paid_amount", 0))
         paid_date = data.get("paid_date")
 
-        items = data.get("items")
+        items = data.get("items") or []
 
-        if not customer or not company or not items:
-            frappe.throw("customer, company and items are required")
+        # =====================================================
+        # VALIDATIONS
+        # =====================================================
+        if not ledger_id:
+            frappe.throw("ledger_id is required")
 
-        # =========================================================
+        if not company:
+            frappe.throw("company is required")
+
+        if not items:
+            frappe.throw("items are required")
+
+        # =====================================================
+        # GET CUSTOMER
+        # =====================================================
+        customer = frappe.db.get_value(
+            "Customer",
+            {"custom_id": ledger_id},
+            "name"
+        )
+
+        if not customer:
+            frappe.throw(
+                f"Customer not found for ledger_id: {ledger_id}"
+            )
+
+        # =====================================================
         # CHECK EXISTING SALES INVOICE
-        # =========================================================
+        # =====================================================
         existing_si_name = frappe.db.get_value(
             "Sales Invoice",
             {
-                "custom_invoice_no": custom_invoice_no,
-                "docstatus": 1
+                "custom_zoho_invoice_id": zoho_invoice_id
             },
             "name"
         )
 
         amended_from = None
 
-        # =========================================================
-        # CANCEL & AMEND EXISTING SALES INVOICE
-        # =========================================================
+        # =====================================================
+        # HANDLE EXISTING INVOICE
+        # =====================================================
         if existing_si_name:
 
-            old_si = frappe.get_doc("Sales Invoice", existing_si_name)
+            old_si = frappe.get_doc(
+                "Sales Invoice",
+                existing_si_name
+            )
 
-            # Cancel old invoice
-            old_si.cancel()
+            # ---------------------------------------------
+            # IF SUBMITTED -> CANCEL
+            # ---------------------------------------------
+            if old_si.docstatus == 1:
+                old_si.cancel()
 
-            # Create amended copy
-            amended_si = frappe.copy_doc(old_si)
+            # ---------------------------------------------
+            # REMOVE UNIQUE VALUES
+            # ---------------------------------------------
+            frappe.db.set_value(
+                "Sales Invoice",
+                old_si.name,
+                "custom_zoho_invoice_no",
+                None
+            )
 
-            amended_si.amended_from = old_si.name
-            amended_si.docstatus = 0
+            frappe.db.set_value(
+                "Sales Invoice",
+                old_si.name,
+                "custom_zoho_invoice_id",
+                None
+            )
 
-            amended_si.insert(ignore_permissions=True)
+            frappe.db.commit()
 
-            amended_from = amended_si.name
+            amended_from = old_si.name
 
-        # =========================================================
+        # =====================================================
         # FETCH CUSTOMER DIMENSIONS
-        # =========================================================
+        # =====================================================
         customer_data = frappe.db.get_value(
             "Customer",
             customer,
@@ -719,22 +761,31 @@ def update_sales_invoice():
             as_dict=True
         )
 
-        # =========================================================
-        # CREATE NEW SALES INVOICE
-        # =========================================================
+        # =====================================================
+        # CREATE SALES INVOICE
+        # =====================================================
         si = frappe.new_doc("Sales Invoice")
+
+        si.flags.ignore_permissions = True
 
         si.customer = customer
         si.company = company
+
         si.posting_date = posting_date
+
         si.custom_invoice_status = invoice_status
         si.custom_invoice_no_old = invoice_no_old
+
         si.custom_billed_period = billed_period
+
         si.custom_zoho_invoice_no = custom_zoho_invoice_no
         si.custom_invoice_no = custom_invoice_no
+
         si.custom_zoho_invoice_id = zoho_invoice_id
 
-        # Tax Template
+        # =====================================================
+        # TAX TEMPLATE
+        # =====================================================
         si.taxes_and_charges = "UAE VAT 5% - GG"
 
         si.append("taxes", {
@@ -745,40 +796,124 @@ def update_sales_invoice():
             "included_in_print_rate": 0
         })
 
-        # =========================================================
-        # SET ACCOUNTING DIMENSIONS
-        # =========================================================
+        # =====================================================
+        # ACCOUNTING DIMENSIONS
+        # =====================================================
         if customer_data:
-            si.cluster = customer_data.get("custom_cluster")
-            si.tower = customer_data.get("custom_tower")
-            si.parent_name = customer_data.get("custom_parent_name")
-            si.grandparent_name = customer_data.get("custom_grandparent_name")
-            si.greatgrandparent_name = customer_data.get("custom_greatgrandparent_name")
 
-        # =========================================================
+            si.cluster = customer_data.get(
+                "custom_cluster"
+            )
+
+            si.tower = customer_data.get(
+                "custom_tower"
+            )
+
+            si.parent_name = customer_data.get(
+                "custom_parent_name"
+            )
+
+            si.grandparent_name = customer_data.get(
+                "custom_grandparent_name"
+            )
+
+            si.greatgrandparent_name = customer_data.get(
+                "custom_greatgrandparent_name"
+            )
+
+        # =====================================================
         # ADD ITEMS
-        # =========================================================
+        # =====================================================
         for d in items:
+
             si.append("items", {
                 "item_code": d.get("item_code"),
                 "qty": d.get("qty", 1),
                 "rate": d.get("rate", 0)
             })
 
-        # =========================================================
+        # =====================================================
         # INSERT & SUBMIT
-        # =========================================================
+        # =====================================================
         si.insert(ignore_permissions=True)
+
         si.submit()
+
+        # =====================================================
+        # CREATE PAYMENT ENTRY IF PAID
+        # =====================================================
+        payment_entry = None
+
+        if paid_amount > 0:
+
+            pe = frappe.new_doc("Payment Entry")
+
+            pe.flags.ignore_permissions = True
+
+            pe.payment_type = "Receive"
+
+            pe.party_type = "Customer"
+            pe.party = customer
+
+            pe.company = company
+
+            pe.posting_date = (
+                paid_date or posting_date
+            )
+
+            pe.mode_of_payment = "Cash"
+
+            pe.paid_amount = paid_amount
+            pe.received_amount = paid_amount
+
+            pe.reference_no = "AUTO-REF"
+
+            pe.reference_date = (
+                paid_date or posting_date
+            )
+
+            # ---------------------------------------------
+            # ACCOUNTS
+            # ---------------------------------------------
+            pe.paid_from = si.debit_to
+
+            pe.paid_to = frappe.db.get_value(
+                "Company",
+                company,
+                "default_cash_account"
+            )
+
+            pe.append("references", {
+                "reference_doctype": "Sales Invoice",
+                "reference_name": si.name,
+                "total_amount": si.grand_total,
+                "outstanding_amount": si.outstanding_amount,
+                "allocated_amount": paid_amount
+            })
+
+            pe.insert(ignore_permissions=True)
+
+            pe.submit()
+
+            payment_entry = pe.name
+
+        frappe.db.commit()
 
         return {
             "status": "success",
             "sales_invoice": si.name,
+            "payment_entry": payment_entry,
             "amended_from": amended_from
         }
 
     except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "Create/Update SI API")
+
+        frappe.db.rollback()
+
+        frappe.log_error(
+            frappe.get_traceback(),
+            "Update Sales Invoice API"
+        )
 
         return {
             "status": "error",
