@@ -714,7 +714,7 @@ def update_sales_invoice():
         existing_si_name = frappe.db.get_value(
             "Sales Invoice",
             {
-                "custom_zoho_invoice_id": zoho_invoice_id,
+                "custom_zoho_invoice_no": zoho_invoice_id,
                 "docstatus": 1
             },
             "name"
@@ -763,7 +763,7 @@ def update_sales_invoice():
         si.custom_zoho_invoice_no = custom_zoho_invoice_no
         si.custom_invoice_no = custom_invoice_no
 
-        si.custom_zoho_invoice_id = zoho_invoice_id
+        #si.custom_zoho_invoice_id = zoho_invoice_id
 
         # =====================================================
         # TAX TEMPLATE
