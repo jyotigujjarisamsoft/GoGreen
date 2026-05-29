@@ -664,9 +664,6 @@ def update_sales_invoice():
         company = data.get("company")
         invoice_status = data.get("invoice_status")
 
-        paid_amount = float(data.get("paid_amount", 0))
-        paid_date = data.get("paid_date")
-
         items = data.get("items") or []
 
         # =====================================================
@@ -696,56 +693,6 @@ def update_sales_invoice():
             )
 
         # =====================================================
-        # CHECK EXISTING SALES INVOICE
-        # =====================================================
-        existing_si_name = frappe.db.get_value(
-            "Sales Invoice",
-            {
-                "custom_zoho_invoice_id": zoho_invoice_id
-            },
-            "name"
-        )
-
-        amended_from = None
-
-        # =====================================================
-        # HANDLE EXISTING INVOICE
-        # =====================================================
-        if existing_si_name:
-
-            old_si = frappe.get_doc(
-                "Sales Invoice",
-                existing_si_name
-            )
-
-            # ---------------------------------------------
-            # IF SUBMITTED -> CANCEL
-            # ---------------------------------------------
-            if old_si.docstatus == 1:
-                old_si.cancel()
-
-            # ---------------------------------------------
-            # REMOVE UNIQUE VALUES
-            # ---------------------------------------------
-            frappe.db.set_value(
-                "Sales Invoice",
-                old_si.name,
-                "custom_zoho_invoice_no",
-                None
-            )
-
-            frappe.db.set_value(
-                "Sales Invoice",
-                old_si.name,
-                "custom_zoho_invoice_id",
-                None
-            )
-
-            frappe.db.commit()
-
-            amended_from = old_si.name
-
-        # =====================================================
         # FETCH CUSTOMER DIMENSIONS
         # =====================================================
         customer_data = frappe.db.get_value(
@@ -762,10 +709,61 @@ def update_sales_invoice():
         )
 
         # =====================================================
-        # CREATE SALES INVOICE
+        # CHECK EXISTING SALES INVOICE
         # =====================================================
-        si = frappe.new_doc("Sales Invoice")
+        existing_si_name = frappe.db.get_value(
+            "Sales Invoice",
+            {
+                "custom_zoho_invoice_id": zoho_invoice_id
+            },
+            "name"
+        )
 
+        amended_from = None
+
+        # =====================================================
+        # CREATE / AMEND SALES INVOICE
+        # =====================================================
+        if existing_si_name:
+
+            old_si = frappe.get_doc(
+                "Sales Invoice",
+                existing_si_name
+            )
+
+            # ---------------------------------------------
+            # CANCEL OLD SUBMITTED INVOICE
+            # ---------------------------------------------
+            if old_si.docstatus == 1:
+                old_si.cancel()
+
+            amended_from = old_si.name
+
+            # ---------------------------------------------
+            # CREATE AMENDED COPY
+            # ---------------------------------------------
+            si = frappe.copy_doc(old_si)
+
+            si.amended_from = old_si.name
+
+            si.docstatus = 0
+
+            # ---------------------------------------------
+            # CLEAR CHILD TABLES
+            # ---------------------------------------------
+            si.items = []
+            si.taxes = []
+
+        else:
+
+            # ---------------------------------------------
+            # CREATE NEW SALES INVOICE
+            # ---------------------------------------------
+            si = frappe.new_doc("Sales Invoice")
+
+        # =====================================================
+        # COMMON FIELDS
+        # =====================================================
         si.flags.ignore_permissions = True
 
         si.customer = customer
@@ -833,76 +831,17 @@ def update_sales_invoice():
             })
 
         # =====================================================
-        # INSERT & SUBMIT
+        # SAVE & SUBMIT
         # =====================================================
         si.insert(ignore_permissions=True)
 
         si.submit()
-
-        # =====================================================
-        # CREATE PAYMENT ENTRY IF PAID
-        # =====================================================
-        payment_entry = None
-
-        if paid_amount > 0:
-
-            pe = frappe.new_doc("Payment Entry")
-
-            pe.flags.ignore_permissions = True
-
-            pe.payment_type = "Receive"
-
-            pe.party_type = "Customer"
-            pe.party = customer
-
-            pe.company = company
-
-            pe.posting_date = (
-                paid_date or posting_date
-            )
-
-            pe.mode_of_payment = "Cash"
-
-            pe.paid_amount = paid_amount
-            pe.received_amount = paid_amount
-
-            pe.reference_no = "AUTO-REF"
-
-            pe.reference_date = (
-                paid_date or posting_date
-            )
-
-            # ---------------------------------------------
-            # ACCOUNTS
-            # ---------------------------------------------
-            pe.paid_from = si.debit_to
-
-            pe.paid_to = frappe.db.get_value(
-                "Company",
-                company,
-                "default_cash_account"
-            )
-
-            pe.append("references", {
-                "reference_doctype": "Sales Invoice",
-                "reference_name": si.name,
-                "total_amount": si.grand_total,
-                "outstanding_amount": si.outstanding_amount,
-                "allocated_amount": paid_amount
-            })
-
-            pe.insert(ignore_permissions=True)
-
-            pe.submit()
-
-            payment_entry = pe.name
 
         frappe.db.commit()
 
         return {
             "status": "success",
             "sales_invoice": si.name,
-            "payment_entry": payment_entry,
             "amended_from": amended_from
         }
 
