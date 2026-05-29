@@ -709,12 +709,13 @@ def update_sales_invoice():
         )
 
         # =====================================================
-        # CHECK EXISTING SALES INVOICE
+        # CHECK EXISTING SUBMITTED INVOICE
         # =====================================================
         existing_si_name = frappe.db.get_value(
             "Sales Invoice",
             {
-                "custom_zoho_invoice_id": zoho_invoice_id
+                "custom_zoho_invoice_id": zoho_invoice_id,
+                "docstatus": 1
             },
             "name"
         )
@@ -722,7 +723,7 @@ def update_sales_invoice():
         amended_from = None
 
         # =====================================================
-        # CREATE / AMEND SALES INVOICE
+        # CANCEL OLD INVOICE
         # =====================================================
         if existing_si_name:
 
@@ -731,41 +732,24 @@ def update_sales_invoice():
                 existing_si_name
             )
 
-            # ---------------------------------------------
-            # CANCEL OLD SUBMITTED INVOICE
-            # ---------------------------------------------
-            if old_si.docstatus == 1:
-                old_si.cancel()
+            old_si.cancel()
 
             amended_from = old_si.name
 
-            # ---------------------------------------------
-            # CREATE AMENDED COPY
-            # ---------------------------------------------
-            si = frappe.copy_doc(old_si)
+        # =====================================================
+        # CREATE NEW AMENDED INVOICE
+        # =====================================================
+        si = frappe.new_doc("Sales Invoice")
 
-            si.amended_from = old_si.name
+        si.flags.ignore_permissions = True
 
-            si.docstatus = 0
-
-            # ---------------------------------------------
-            # CLEAR CHILD TABLES
-            # ---------------------------------------------
-            si.items = []
-            si.taxes = []
-
-        else:
-
-            # ---------------------------------------------
-            # CREATE NEW SALES INVOICE
-            # ---------------------------------------------
-            si = frappe.new_doc("Sales Invoice")
+        # IMPORTANT
+        if amended_from:
+            si.amended_from = amended_from
 
         # =====================================================
         # COMMON FIELDS
         # =====================================================
-        si.flags.ignore_permissions = True
-
         si.customer = customer
         si.company = company
 
