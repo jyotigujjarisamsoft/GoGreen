@@ -912,11 +912,9 @@ def create_documents_from_stripe_payload(payload):
         customer_doc = frappe.get_doc({
             "doctype": "Customer",
             "customer_name": customer_name,
-            "customer_group": "All Customer Groups",
-            "territory": "All Territories",
             "customer_type": "Individual",
-            "email_id": email,
-            "mobile_no": phone
+            "custom_phone_no": email,
+            "custom_customer_email_id": phone
         })
 
         customer_doc.insert(ignore_permissions=True)
