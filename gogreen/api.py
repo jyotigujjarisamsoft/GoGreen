@@ -859,8 +859,368 @@ def stripe_webhook():
 
     return create_documents_from_stripe_payload(payload)
 
+
 @frappe.whitelist(allow_guest=True)
-def create_documents_from_stripe_payload(payload):
+def create_documents_from_stripe_payload(payload=None):
+
+    # -----------------------------------------
+    # Get Payload
+    # -----------------------------------------
+
+    if not payload:
+        payload = frappe.request.get_json()
+
+    if not payload:
+        frappe.throw(_("Invalid Payload"))
+
+    # If payload is received as JSON string
+    if isinstance(payload, str):
+        payload = frappe.parse_json(payload)
+
+    # -----------------------------------------
+    # Detect Stripe Object
+    # -----------------------------------------
+
+    stripe_object = payload.get("object")
+
+    # -----------------------------------------
+    # Variables
+    # -----------------------------------------
+
+    customer_name = None
+    email = None
+    phone = None
+    amount = 0
+    currency = "AED"
+    stripe_payment_id = None
+
+    # -----------------------------------------
+    # CHARGE PAYLOAD
+    # -----------------------------------------
+
+    if stripe_object == "charge":
+
+        # Payment must be successful
+        if payload.get("status") != "succeeded":
+            frappe.throw(_("Payment not successful"))
+
+        if not payload.get("paid"):
+            frappe.throw(_("Payment not successful"))
+
+        # Amount
+        amount = flt(payload.get("amount")) / 100
+
+        # Currency
+        currency = (
+            payload.get("currency") or "aed"
+        ).upper()
+
+        # Stripe Charge ID
+        stripe_payment_id = payload.get("id")
+
+        # Customer details
+        billing_details = payload.get("billing_details") or {}
+        source = payload.get("source") or {}
+
+        customer_name = (
+            billing_details.get("name")
+            or source.get("name")
+            or "Stripe Customer"
+        )
+
+        email = (
+            billing_details.get("email")
+            or payload.get("receipt_email")
+            or source.get("email")
+        )
+
+        phone = (
+            billing_details.get("phone")
+            or source.get("phone")
+        )
+
+    # -----------------------------------------
+    # CHECKOUT SESSION PAYLOAD
+    # -----------------------------------------
+
+    elif stripe_object == "checkout.session":
+
+        # Payment must be successful
+        if payload.get("status") != "complete":
+            frappe.throw(_("Payment not successful"))
+
+        if payload.get("payment_status") != "paid":
+            frappe.throw(_("Payment not successful"))
+
+        # Payment Intent
+        payment_intent = payload.get("payment_intent") or {}
+
+        if isinstance(payment_intent, dict):
+
+            # Payment Intent status
+            if payment_intent.get("status") != "succeeded":
+                frappe.throw(
+                    _("Stripe Payment Intent is not successful")
+                )
+
+            amount = flt(
+                payment_intent.get("amount", 0)
+            ) / 100
+
+            currency = (
+                payment_intent.get("currency")
+                or payload.get("currency")
+                or "aed"
+            ).upper()
+
+            stripe_payment_id = payment_intent.get("id")
+
+        else:
+
+            stripe_payment_id = payment_intent
+
+            # Fallback amount from session
+            amount = flt(
+                payload.get("amount_total", 0)
+            ) / 100
+
+            currency = (
+                payload.get("currency")
+                or "aed"
+            ).upper()
+
+        # Customer details
+        customer_details = (
+            payload.get("customer_details") or {}
+        )
+
+        customer_name = (
+            customer_details.get("name")
+            or "Stripe Customer"
+        )
+
+        email = customer_details.get("email")
+        phone = customer_details.get("phone")
+
+    # -----------------------------------------
+    # Unsupported Stripe Object
+    # -----------------------------------------
+
+    else:
+
+        frappe.throw(
+            _("Unsupported Stripe object: {0}").format(
+                stripe_object
+            )
+        )
+
+    # -----------------------------------------
+    # Basic Validation
+    # -----------------------------------------
+
+    if not stripe_payment_id:
+        frappe.throw(_("Stripe payment ID not found"))
+
+    if amount <= 0:
+        frappe.throw(_("Invalid payment amount"))
+
+    # -----------------------------------------
+    # Company
+    # -----------------------------------------
+
+    company = "Go Green Cleaning Solution"
+
+    # -----------------------------------------
+    # Check Duplicate Payment
+    # -----------------------------------------
+
+    if frappe.db.exists(
+        "Payment Entry",
+        {"reference_no": stripe_payment_id}
+    ):
+        return {
+            "message": "Payment already imported"
+        }
+
+    # -----------------------------------------
+    # Customer
+    # -----------------------------------------
+
+    customer = None
+
+    if email:
+
+        customer = frappe.db.get_value(
+            "Customer",
+            {"custom_customer_email_id": email},
+            "name"
+        )
+
+    if not customer:
+
+        customer_doc = frappe.get_doc({
+
+            "doctype": "Customer",
+
+            "customer_name": customer_name,
+
+            "customer_type": "Individual",
+
+            "custom_phone_no": phone,
+
+            "custom_customer_email_id": email
+        })
+
+        customer_doc.insert(
+            ignore_permissions=True
+        )
+
+        customer = customer_doc.name
+
+    # -----------------------------------------
+    # Sales Invoice
+    # -----------------------------------------
+
+    invoice = frappe.get_doc({
+
+        "doctype": "Sales Invoice",
+
+        "company": company,
+
+        "customer": customer,
+
+        "currency": currency,
+
+        "disable_rounded_total": 1,
+
+        "items": [
+            {
+                "item_code": "Go Green Service",
+                "qty": 1,
+                "rate": amount
+            }
+        ]
+    })
+
+    # -----------------------------------------
+    # VAT
+    # -----------------------------------------
+
+    invoice.taxes_and_charges = "UAE VAT 5% - GG"
+
+    invoice.append("taxes", {
+
+        "charge_type": "On Net Total",
+
+        "account_head": "VAT 5% - GG",
+
+        "description": "VAT 5%",
+
+        "rate": 5
+    })
+
+    # -----------------------------------------
+    # Insert & Submit Invoice
+    # -----------------------------------------
+
+    invoice.insert(
+        ignore_permissions=True
+    )
+
+    invoice.submit()
+
+    # -----------------------------------------
+    # Payment Entry
+    # -----------------------------------------
+
+    payment = frappe.get_doc({
+
+        "doctype": "Payment Entry",
+
+        "payment_type": "Receive",
+
+        "company": company,
+
+        "party_type": "Customer",
+
+        "party": customer,
+
+        "mode_of_payment": "Stripe",
+
+        "paid_amount": invoice.grand_total,
+
+        "received_amount": invoice.grand_total,
+
+        "reference_no": stripe_payment_id,
+
+        "reference_date": today(),
+
+        "references": [
+            {
+                "reference_doctype": "Sales Invoice",
+
+                "reference_name": invoice.name,
+
+                "allocated_amount": invoice.grand_total
+            }
+        ]
+    })
+
+    # -----------------------------------------
+    # Exchange Rate
+    # -----------------------------------------
+
+    payment.target_exchange_rate = 1
+    payment.source_exchange_rate = 1
+
+    # -----------------------------------------
+    # Paid To Account
+    # -----------------------------------------
+
+    payment.paid_to = "Stripe Clearing - GG"
+
+    # -----------------------------------------
+    # Insert & Submit Payment
+    # -----------------------------------------
+
+    payment.insert(
+        ignore_permissions=True
+    )
+
+    payment.submit()
+
+    # -----------------------------------------
+    # Commit
+    # -----------------------------------------
+
+    frappe.db.commit()
+
+    # -----------------------------------------
+    # Response
+    # -----------------------------------------
+
+    return {
+
+        "success": True,
+
+        "stripe_object": stripe_object,
+
+        "stripe_payment_id": stripe_payment_id,
+
+        "customer": customer,
+
+        "sales_invoice": invoice.name,
+
+        "payment_entry": payment.name,
+
+        "amount": amount,
+
+        "currency": currency
+    }
+
+
+@frappe.whitelist(allow_guest=True)
+def old_create_documents_from_stripe_payload(payload):
 
     payload = frappe.request.get_json()
 
