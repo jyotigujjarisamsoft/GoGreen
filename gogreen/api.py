@@ -854,10 +854,31 @@ def stripe_webhook():
 
     payload = frappe.request.get_json()
 
-    # For debugging
-    frappe.log_error(json.dumps(payload, indent=4), "Stripe Webhook")
+    frappe.log_error(
+        json.dumps(payload, indent=4),
+        "Stripe Webhook"
+    )
 
-    return create_documents_from_stripe_payload(payload)
+    if not payload:
+        frappe.throw(_("Invalid Stripe Payload"))
+
+    event_type = payload.get("type")
+
+    data = payload.get("data") or {}
+    stripe_data = data.get("object") or {}
+
+    # Process successful charge
+    if event_type == "charge.succeeded":
+
+        return create_documents_from_stripe_payload(
+            stripe_data
+        )
+
+    # Ignore other events but return success
+    return {
+        "success": True,
+        "message": f"Event {event_type} received"
+    }
 
 
 @frappe.whitelist(allow_guest=True)
