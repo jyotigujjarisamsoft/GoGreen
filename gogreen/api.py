@@ -869,6 +869,7 @@ def stripe_webhook():
 
     # Process successful charge
     if event_type == "charge.succeeded":
+    	frappe.set_user("Administrator")
 
         return create_documents_from_stripe_payload(
             stripe_data
