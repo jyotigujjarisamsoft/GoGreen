@@ -846,11 +846,12 @@ def update_sales_invoice():
 import frappe
 from frappe import _
 from frappe.utils import flt, today
-import frappe
-import json
-
 @frappe.whitelist(allow_guest=True)
 def stripe_webhook():
+
+    # -----------------------------------------
+    # Get Stripe Request Body
+    # -----------------------------------------
 
     payload = frappe.request.get_json()
 
@@ -862,13 +863,24 @@ def stripe_webhook():
     if not payload:
         frappe.throw(_("Invalid Stripe Payload"))
 
+    # -----------------------------------------
+    # Get Event Type
+    # -----------------------------------------
+
     event_type = payload.get("type")
+
+    # -----------------------------------------
+    # Get Stripe Object
+    # -----------------------------------------
 
     data = payload.get("data") or {}
     stripe_data = data.get("object") or {}
 
-    # Process successful charge
-    if event_type == "charge.succeeded":
+    # -----------------------------------------
+    # Process Checkout Session Completed
+    # -----------------------------------------
+
+    if event_type == "checkout.session.completed":
 
         frappe.set_user("Administrator")
 
@@ -876,7 +888,10 @@ def stripe_webhook():
             payload=stripe_data
         )
 
-    # Ignore other events but return success
+    # -----------------------------------------
+    # Ignore Other Events
+    # -----------------------------------------
+
     return {
         "success": True,
         "message": f"Event {event_type} received"
@@ -913,117 +928,131 @@ def create_documents_from_stripe_payload(payload=None):
     customer_name = None
     email = None
     phone = None
+
+    car_plate = None
+    tower_name = None
+
     amount = 0
     currency = "AED"
+
     stripe_payment_id = None
-
-    # -----------------------------------------
-    # CHARGE PAYLOAD
-    # -----------------------------------------
-
-    if stripe_object == "charge":
-
-        # Payment must be successful
-        if payload.get("status") != "succeeded":
-            frappe.throw(_("Payment not successful"))
-
-        if not payload.get("paid"):
-            frappe.throw(_("Payment not successful"))
-
-        # Amount
-        amount = flt(payload.get("amount")) / 100
-
-        # Currency
-        currency = (
-            payload.get("currency") or "aed"
-        ).upper()
-
-        # Stripe Charge ID
-        stripe_payment_id = payload.get("id")
-
-        # Customer details
-        billing_details = payload.get("billing_details") or {}
-        source = payload.get("source") or {}
-
-        customer_name = (
-            billing_details.get("name")
-            or source.get("name")
-            or "Stripe Customer"
-        )
-
-        email = (
-            billing_details.get("email")
-            or payload.get("receipt_email")
-            or source.get("email")
-        )
-
-        phone = (
-            billing_details.get("phone")
-            or source.get("phone")
-        )
 
     # -----------------------------------------
     # CHECKOUT SESSION PAYLOAD
     # -----------------------------------------
 
-    elif stripe_object == "checkout.session":
+    if stripe_object == "checkout.session":
 
-        # Payment must be successful
+        # -----------------------------------------
+        # Payment Validation
+        # -----------------------------------------
+
         if payload.get("status") != "complete":
-            frappe.throw(_("Payment not successful"))
+            frappe.throw(
+                _("Payment not successful")
+            )
 
         if payload.get("payment_status") != "paid":
-            frappe.throw(_("Payment not successful"))
+            frappe.throw(
+                _("Payment not successful")
+            )
 
+        # -----------------------------------------
         # Payment Intent
-        payment_intent = payload.get("payment_intent") or {}
+        # -----------------------------------------
 
-        if isinstance(payment_intent, dict):
+        stripe_payment_id = payload.get(
+            "payment_intent"
+        )
 
-            # Payment Intent status
-            if payment_intent.get("status") != "succeeded":
-                frappe.throw(
-                    _("Stripe Payment Intent is not successful")
-                )
+        if not stripe_payment_id:
+            frappe.throw(
+                _("Stripe Payment Intent not found")
+            )
 
-            amount = flt(
-                payment_intent.get("amount", 0)
-            ) / 100
+        # -----------------------------------------
+        # Amount
+        # -----------------------------------------
 
-            currency = (
-                payment_intent.get("currency")
-                or payload.get("currency")
-                or "aed"
-            ).upper()
+        amount = flt(
+            payload.get("amount_total", 0)
+        ) / 100
 
-            stripe_payment_id = payment_intent.get("id")
+        if amount <= 0:
+            frappe.throw(
+                _("Invalid payment amount")
+            )
 
-        else:
+        # -----------------------------------------
+        # Currency
+        # -----------------------------------------
 
-            stripe_payment_id = payment_intent
+        currency = (
+            payload.get("currency")
+            or "aed"
+        ).upper()
 
-            # Fallback amount from session
-            amount = flt(
-                payload.get("amount_total", 0)
-            ) / 100
+        # -----------------------------------------
+        # Customer Details
+        # -----------------------------------------
 
-            currency = (
-                payload.get("currency")
-                or "aed"
-            ).upper()
-
-        # Customer details
         customer_details = (
             payload.get("customer_details") or {}
         )
 
-        customer_name = (
-            customer_details.get("name")
-            or "Stripe Customer"
+        email = customer_details.get("email")
+
+        phone = customer_details.get("phone")
+
+        # -----------------------------------------
+        # Stripe Custom Fields
+        # -----------------------------------------
+
+        custom_fields = (
+            payload.get("custom_fields") or []
         )
 
-        email = customer_details.get("email")
-        phone = customer_details.get("phone")
+        for field in custom_fields:
+
+            field_key = field.get("key")
+
+            text_data = field.get("text") or {}
+
+            field_value = text_data.get("value")
+
+            # -------------------------------------
+            # Car Plate
+            # -------------------------------------
+
+            if field_key == "carplate":
+
+                car_plate = field_value
+
+            # -------------------------------------
+            # Tower Name
+            # -------------------------------------
+
+            elif field_key == "towername":
+
+                tower_name = field_value
+
+            # -------------------------------------
+            # Full Name
+            # -------------------------------------
+
+            elif field_key == "fullname":
+
+                customer_name = field_value
+
+        # -----------------------------------------
+        # Full Name is Mandatory
+        # -----------------------------------------
+
+        if not customer_name:
+
+            frappe.throw(
+                _("Full Name is required")
+            )
 
     # -----------------------------------------
     # Unsupported Stripe Object
@@ -1042,10 +1071,16 @@ def create_documents_from_stripe_payload(payload=None):
     # -----------------------------------------
 
     if not stripe_payment_id:
-        frappe.throw(_("Stripe payment ID not found"))
+
+        frappe.throw(
+            _("Stripe payment ID not found")
+        )
 
     if amount <= 0:
-        frappe.throw(_("Invalid payment amount"))
+
+        frappe.throw(
+            _("Invalid payment amount")
+        )
 
     # -----------------------------------------
     # Company
@@ -1057,16 +1092,24 @@ def create_documents_from_stripe_payload(payload=None):
     # Check Duplicate Payment
     # -----------------------------------------
 
-    if frappe.db.exists(
+    existing_payment = frappe.db.exists(
         "Payment Entry",
-        {"reference_no": stripe_payment_id}
-    ):
+        {
+            "reference_no": stripe_payment_id
+        }
+    )
+
+    if existing_payment:
+
         return {
-            "message": "Payment already imported"
+            "success": True,
+            "message": "Payment already imported",
+            "stripe_payment_id": stripe_payment_id,
+            "payment_entry": existing_payment
         }
 
     # -----------------------------------------
-    # Customer
+    # Find Customer By Email
     # -----------------------------------------
 
     customer = None
@@ -1075,9 +1118,15 @@ def create_documents_from_stripe_payload(payload=None):
 
         customer = frappe.db.get_value(
             "Customer",
-            {"custom_customer_email_id": email},
+            {
+                "custom_customer_email_id": email
+            },
             "name"
         )
+
+    # -----------------------------------------
+    # Create Customer
+    # -----------------------------------------
 
     if not customer:
 
@@ -1085,13 +1134,19 @@ def create_documents_from_stripe_payload(payload=None):
 
             "doctype": "Customer",
 
+            # IMPORTANT:
+            # Use Stripe custom field "fullname"
             "customer_name": customer_name,
 
             "customer_type": "Individual",
 
             "custom_phone_no": phone,
 
-            "custom_customer_email_id": email
+            "custom_customer_email_id": email,
+
+            "custom_car_plate": car_plate,
+
+            "custom_tower_name": tower_name
         })
 
         customer_doc.insert(
@@ -1099,6 +1154,30 @@ def create_documents_from_stripe_payload(payload=None):
         )
 
         customer = customer_doc.name
+
+    # -----------------------------------------
+    # Update Existing Customer
+    # -----------------------------------------
+
+    else:
+
+        customer_doc = frappe.get_doc(
+            "Customer",
+            customer
+        )
+
+        if phone:
+            customer_doc.custom_phone_no = phone
+
+        if car_plate:
+            customer_doc.custom_car_plate = car_plate
+
+        if tower_name:
+            customer_doc.custom_tower_name = tower_name
+
+        customer_doc.save(
+            ignore_permissions=True
+        )
 
     # -----------------------------------------
     # Sales Invoice
@@ -1119,7 +1198,9 @@ def create_documents_from_stripe_payload(payload=None):
         "items": [
             {
                 "item_code": "Go Green Service",
+
                 "qty": 1,
+
                 "rate": amount
             }
         ]
@@ -1139,16 +1220,22 @@ def create_documents_from_stripe_payload(payload=None):
 
         "description": "VAT 5%",
 
-        "rate": 5
+        "rate": 5,
+        
+        "included_in_print_rate": 1
     })
 
     # -----------------------------------------
-    # Insert & Submit Invoice
+    # Insert Invoice
     # -----------------------------------------
 
     invoice.insert(
         ignore_permissions=True
     )
+
+    # -----------------------------------------
+    # Submit Invoice
+    # -----------------------------------------
 
     invoice.submit()
 
@@ -1194,6 +1281,7 @@ def create_documents_from_stripe_payload(payload=None):
     # -----------------------------------------
 
     payment.target_exchange_rate = 1
+
     payment.source_exchange_rate = 1
 
     # -----------------------------------------
@@ -1203,12 +1291,16 @@ def create_documents_from_stripe_payload(payload=None):
     payment.paid_to = "Stripe Clearing - GG"
 
     # -----------------------------------------
-    # Insert & Submit Payment
+    # Insert Payment
     # -----------------------------------------
 
     payment.insert(
         ignore_permissions=True
     )
+
+    # -----------------------------------------
+    # Submit Payment
+    # -----------------------------------------
 
     payment.submit()
 
@@ -1232,6 +1324,16 @@ def create_documents_from_stripe_payload(payload=None):
 
         "customer": customer,
 
+        "customer_name": customer_name,
+
+        "email": email,
+
+        "phone": phone,
+
+        "car_plate": car_plate,
+
+        "tower_name": tower_name,
+
         "sales_invoice": invoice.name,
 
         "payment_entry": payment.name,
@@ -1240,8 +1342,6 @@ def create_documents_from_stripe_payload(payload=None):
 
         "currency": currency
     }
-
-
 @frappe.whitelist(allow_guest=True)
 def old_create_documents_from_stripe_payload(payload):
 
