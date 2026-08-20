@@ -1339,7 +1339,7 @@ def create_documents_from_stripe_payload(payload=None):
         "currency": currency
     }
 @frappe.whitelist(allow_guest=True)
-def old_create_documents_from_stripe_payload(payload):
+def oldd_create_documents_from_stripe_payload(payload):
 
     payload = frappe.request.get_json()
 
@@ -1636,4 +1636,5 @@ def create_documents_from_stripe():
         "sales_invoice": invoice.name,
         "payment_entry": payment.name
     }
+    
     
