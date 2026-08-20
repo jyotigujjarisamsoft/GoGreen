@@ -936,6 +936,7 @@ def create_documents_from_stripe_payload(payload=None):
 
     car_plate = None
     tower_name = None
+    flat_no = None
 
     amount = 0
     currency = "AED"
@@ -953,69 +954,52 @@ def create_documents_from_stripe_payload(payload=None):
         # -----------------------------------------
 
         if payload.get("status") != "complete":
-            frappe.throw(
-                _("Payment not successful")
-            )
+            frappe.throw(_("Payment not successful"))
 
         if payload.get("payment_status") != "paid":
-            frappe.throw(
-                _("Payment not successful")
-            )
+            frappe.throw(_("Payment not successful"))
 
         # -----------------------------------------
         # Payment Intent
         # -----------------------------------------
 
-        stripe_payment_id = payload.get(
-            "payment_intent"
-        )
+        stripe_payment_id = payload.get("payment_intent")
 
         if not stripe_payment_id:
-            frappe.throw(
-                _("Stripe Payment Intent not found")
-            )
+            frappe.throw(_("Stripe Payment Intent not found"))
 
         # -----------------------------------------
         # Amount
         # -----------------------------------------
 
-        amount = flt(
-            payload.get("amount_total", 0)
-        ) / 100
+        amount = flt(payload.get("amount_total", 0)) / 100
 
         if amount <= 0:
-            frappe.throw(
-                _("Invalid payment amount")
-            )
+            frappe.throw(_("Invalid payment amount"))
 
         # -----------------------------------------
         # Currency
         # -----------------------------------------
 
         currency = (
-            payload.get("currency")
-            or "aed"
+            payload.get("currency") or "aed"
         ).upper()
 
         # -----------------------------------------
         # Customer Details
         # -----------------------------------------
 
-        customer_details = (
-            payload.get("customer_details") or {}
-        )
+        customer_details = payload.get("customer_details") or {}
 
         email = customer_details.get("email")
-
+        customer_name = customer_details.get("name")
         phone = customer_details.get("phone")
 
         # -----------------------------------------
         # Stripe Custom Fields
         # -----------------------------------------
 
-        custom_fields = (
-            payload.get("custom_fields") or []
-        )
+        custom_fields = payload.get("custom_fields") or []
 
         for field in custom_fields:
 
@@ -1042,22 +1026,12 @@ def create_documents_from_stripe_payload(payload=None):
                 tower_name = field_value
 
             # -------------------------------------
-            # Full Name
+            # Flat No
             # -------------------------------------
 
-            elif field_key == "fullname":
+            elif field_key == "flatno":
 
-                customer_name = field_value
-
-        # -----------------------------------------
-        # Full Name is Mandatory
-        # -----------------------------------------
-
-        if not customer_name:
-
-            frappe.throw(
-                _("Full Name is required")
-            )
+                flat_no = field_value
 
     # -----------------------------------------
     # Unsupported Stripe Object
@@ -1076,16 +1050,10 @@ def create_documents_from_stripe_payload(payload=None):
     # -----------------------------------------
 
     if not stripe_payment_id:
-
-        frappe.throw(
-            _("Stripe payment ID not found")
-        )
+        frappe.throw(_("Stripe payment ID not found"))
 
     if amount <= 0:
-
-        frappe.throw(
-            _("Invalid payment amount")
-        )
+        frappe.throw(_("Invalid payment amount"))
 
     # -----------------------------------------
     # Company
@@ -1135,12 +1103,26 @@ def create_documents_from_stripe_payload(payload=None):
 
     if not customer:
 
+        # IMPORTANT:
+        # customer_name = Stripe Customer Details name
+        #
+        # custom_license_plate = car plate
+        # custom_car_plate = same car plate
+        #
+        # Your Customer Naming Rule is:
+        #
+        # format:{customer_name}{custom_license_plate}
+        #
+        # Therefore ERPNext will generate:
+        #
+        # John Smith + ABC123
+        #
+        # as the Customer name automatically.
+
         customer_doc = frappe.get_doc({
 
             "doctype": "Customer",
 
-            # IMPORTANT:
-            # Use Stripe custom field "fullname"
             "customer_name": customer_name,
 
             "customer_type": "Individual",
@@ -1149,9 +1131,13 @@ def create_documents_from_stripe_payload(payload=None):
 
             "custom_customer_email_id": email,
 
+            "custom_license_plate": car_plate,
+
             "custom_car_plate": car_plate,
 
-            "custom_tower_name": tower_name
+            "custom_tower_name": tower_name,
+
+            "custom_flat_no": flat_no
         })
 
         customer_doc.insert(
@@ -1175,10 +1161,14 @@ def create_documents_from_stripe_payload(payload=None):
             customer_doc.custom_phone_no = phone
 
         if car_plate:
+            customer_doc.custom_license_plate = car_plate
             customer_doc.custom_car_plate = car_plate
 
         if tower_name:
             customer_doc.custom_tower_name = tower_name
+
+        if flat_no:
+            customer_doc.custom_flat_no = flat_no
 
         customer_doc.save(
             ignore_permissions=True
@@ -1226,7 +1216,7 @@ def create_documents_from_stripe_payload(payload=None):
         "description": "VAT 5%",
 
         "rate": 5,
-        
+
         "included_in_print_rate": 1
     })
 
@@ -1286,7 +1276,6 @@ def create_documents_from_stripe_payload(payload=None):
     # -----------------------------------------
 
     payment.target_exchange_rate = 1
-
     payment.source_exchange_rate = 1
 
     # -----------------------------------------
@@ -1338,6 +1327,8 @@ def create_documents_from_stripe_payload(payload=None):
         "car_plate": car_plate,
 
         "tower_name": tower_name,
+
+        "flat_no": flat_no,
 
         "sales_invoice": invoice.name,
 
@@ -1645,3 +1636,478 @@ def create_documents_from_stripe():
         "sales_invoice": invoice.name,
         "payment_entry": payment.name
     }
+    
+@frappe.whitelist()
+def generate_monthly_sales_invoices(docname):
+
+    print("=" * 80)
+    print("Starting Monthly Invoice Generation")
+
+    doc = frappe.get_doc("Monthly Invoice Creation", docname)
+
+    print(f"Document Name      : {doc.name}")
+    print(f"Customer Type      : {doc.customer_type}")
+    print(f"Billed Period      : {doc.billed_period}")
+    print(f"Posting Date       : {doc.date}")
+
+    # =========================================================
+    # STRIPE CONFIGURATION
+    # =========================================================
+
+    stripe_secret_key = "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"
+
+    stripe_url = "https://api.stripe.com/v1/checkout/sessions"
+
+    # =========================================================
+    # GET CUSTOMERS
+    # =========================================================
+
+    customers = frappe.get_all(
+        "Customer",
+        filters={
+            "custom_customer_typee": doc.customer_type
+        },
+        fields=[
+            "name",
+            "customer_name",
+            "custom_rate",
+            "custom_cluster",
+            "custom_tower",
+            "custom_parent_name",
+            "custom_grandparent_name",
+            "custom_greatgrandparent_name"
+        ]
+    )
+
+    print(f"Total Customers Found : {len(customers)}")
+
+    created = 0
+    skipped = 0
+    failed = 0
+    stripe_failed = 0
+
+    # =========================================================
+    # PROCESS CUSTOMERS
+    # =========================================================
+
+    for customer in customers:
+
+        print("-" * 80)
+        print(f"Processing Customer : {customer.name}")
+        print(f"Customer Name       : {customer.customer_name}")
+        print(f"Rate                : {customer.custom_rate}")
+
+        try:
+
+            # =================================================
+            # CHECK IF INVOICE ALREADY EXISTS
+            # =================================================
+
+            existing_invoice = frappe.db.exists(
+                "Sales Invoice",
+                {
+                    "customer": customer.name,
+                    "custom_billed_period": doc.billed_period,
+                    "docstatus": ["!=", 2]
+                }
+            )
+
+            if existing_invoice:
+
+                print(
+                    f"Invoice already exists : {existing_invoice}"
+                )
+
+                skipped += 1
+                continue
+
+            # =================================================
+            # CREATE SALES INVOICE
+            # =================================================
+
+            print("Creating Sales Invoice...")
+
+            si = frappe.new_doc("Sales Invoice")
+
+            si.company = "Go Green Cleaning Solution"
+
+            # Stripe payment is AED
+            si.currency = "AED"
+
+            si.customer = customer.name
+            si.posting_date = doc.date
+
+            # =================================================
+            # CUSTOM FIELDS
+            # =================================================
+
+            si.custom_billed_period = doc.billed_period
+
+            si.cluster = customer.custom_cluster
+            si.tower = customer.custom_tower
+
+            si.parent_name = customer.custom_parent_name
+            si.grandparent_name = customer.custom_grandparent_name
+            si.greatgrandparent_name = (
+                customer.custom_greatgrandparent_name
+            )
+
+            si.disable_rounded_total = 1
+
+            # =================================================
+            # TAXES
+            # =================================================
+
+            si.taxes_and_charges = "UAE VAT 5% - GG"
+
+            si.append("taxes", {
+                "charge_type": "On Net Total",
+                "account_head": "VAT 5% - GG",
+                "description": "VAT 5%",
+                "rate": 5
+            })
+
+            print(
+                "Tax Template :",
+                si.taxes_and_charges
+            )
+
+            # =================================================
+            # ITEM
+            # =================================================
+
+            rate = float(customer.custom_rate or 0)
+
+            if rate <= 0:
+                frappe.throw(
+                    f"Invalid rate for customer {customer.name}: {rate}"
+                )
+
+            si.append("items", {
+                "item_code": "Go Green Service",
+                "qty": 1,
+                "rate": rate
+            })
+
+            print("Item Added")
+            print("Item Rate :", rate)
+
+            # =================================================
+            # INSERT SALES INVOICE
+            # =================================================
+
+            print("Saving Sales Invoice...")
+
+            si.insert(ignore_permissions=True)
+
+            print(
+                f"Sales Invoice Created : {si.name}"
+            )
+
+            # =================================================
+            # CALCULATE TOTALS
+            # =================================================
+
+            si.calculate_taxes_and_totals()
+
+            print("Net Total   :", si.net_total)
+            print("Tax Total   :", si.total_taxes_and_charges)
+            print("Grand Total :", si.grand_total)
+
+            # =================================================
+            # UPDATE TOTALS IN DATABASE
+            # =================================================
+
+            si.save(ignore_permissions=True)
+
+            # =================================================
+            # STRIPE AMOUNT
+            # =================================================
+
+            # Stripe expects the smallest currency unit.
+            #
+            # Example:
+            # AED 100.00 = 10000 fils
+            #
+            # We use ERPNext Grand Total so Stripe payment
+            # matches the invoice including VAT.
+
+            stripe_amount = int(
+                round(float(si.grand_total) * 100)
+            )
+
+            print(
+                "Stripe Amount (smallest unit) :",
+                stripe_amount
+            )
+
+            if stripe_amount <= 0:
+
+                raise Exception(
+                    f"Invalid Stripe amount for invoice {si.name}"
+                )
+
+            # =================================================
+            # STRIPE CHECKOUT SESSION DATA
+            # =================================================
+
+            stripe_payload = {
+
+                # -------------------------------------------------
+                # PRODUCT
+                # -------------------------------------------------
+
+                "line_items[0][price_data][product_data][name]":
+                    "Go Green Service",
+
+                "line_items[0][quantity]":
+                    "1",
+
+                # -------------------------------------------------
+                # AMOUNT
+                # -------------------------------------------------
+
+                "line_items[0][price_data][unit_amount]":
+                    str(stripe_amount),
+
+                "line_items[0][price_data][currency]":
+                    "aed",
+
+                # -------------------------------------------------
+                # CHECKOUT MODE
+                # -------------------------------------------------
+
+                "mode":
+                    "payment",
+
+                # -------------------------------------------------
+                # SALES INVOICE METADATA
+                # -------------------------------------------------
+
+                "metadata[sales_invoice_no]":
+                    si.name,
+
+                "metadata[internal_reference]":
+                    si.name,
+
+                # -------------------------------------------------
+                # PAYMENT INTENT METADATA
+                # -------------------------------------------------
+
+                "payment_intent_data[metadata][sales_invoice_no]":
+                    si.name,
+
+                "payment_intent_data[metadata][order_id]":
+                    si.name,
+
+                # -------------------------------------------------
+                # SUCCESS / CANCEL URL
+                # -------------------------------------------------
+
+                "success_url":
+                    "https://gogreen.frappe.cloud/success",
+
+                "cancel_url":
+                    "https://gogreen.frappe.cloud/cancel"
+            }
+
+            # =================================================
+            # CREATE STRIPE CHECKOUT SESSION
+            # =================================================
+
+            print("Creating Stripe Payment Link...")
+
+            stripe_response = requests.post(
+                stripe_url,
+
+                headers={
+                    "Authorization":
+                        f"Bearer {stripe_secret_key}",
+
+                    "Content-Type":
+                        "application/x-www-form-urlencoded"
+                },
+
+                data=stripe_payload,
+
+                timeout=30
+            )
+
+            print(
+                "Stripe HTTP Status :",
+                stripe_response.status_code
+            )
+
+            stripe_data = stripe_response.json()
+
+            # =================================================
+            # STRIPE ERROR
+            # =================================================
+
+            if stripe_response.status_code >= 400:
+
+                stripe_failed += 1
+
+                print("Stripe Error:")
+                print(stripe_data)
+
+                frappe.log_error(
+                    title=(
+                        f"Stripe Payment Link Failed - "
+                        f"{si.name}"
+                    ),
+                    message=frappe.as_json(
+                        stripe_data
+                    )
+                )
+
+                # Sales Invoice is already created.
+                # Continue with next customer.
+
+                continue
+
+            # =================================================
+            # GET STRIPE DETAILS
+            # =================================================
+
+            checkout_session_id = stripe_data.get("id")
+            payment_link = stripe_data.get("url")
+
+            print(
+                "Stripe Checkout Session :",
+                checkout_session_id
+            )
+
+            print(
+                "Stripe Payment Link :",
+                payment_link
+            )
+
+            # =================================================
+            # CHECK PAYMENT URL
+            # =================================================
+
+            if not payment_link:
+
+                stripe_failed += 1
+
+                frappe.log_error(
+                    title=(
+                        f"Stripe Payment URL Missing - "
+                        f"{si.name}"
+                    ),
+                    message=frappe.as_json(
+                        stripe_data
+                    )
+                )
+
+                continue
+
+            # =================================================
+            # STORE PAYMENT LINK IN SALES INVOICE
+            # =================================================
+
+            si.db_set(
+                "custom_payment_link",
+                payment_link,
+                update_modified=False
+            )
+
+            print(
+                "Payment Link Stored :",
+                payment_link
+            )
+
+            # =================================================
+            # OPTIONAL:
+            # STORE STRIPE SESSION ID
+            # =================================================
+
+            # If you create a custom field called:
+            #
+            # custom_stripe_session_id
+            #
+            # uncomment this:
+
+            # si.db_set(
+            #     "custom_stripe_session_id",
+            #     checkout_session_id,
+            #     update_modified=False
+            # )
+
+            # =================================================
+            # SUCCESS
+            # =================================================
+
+            created += 1
+
+            print(
+                f"Customer processed successfully : "
+                f"{customer.name}"
+            )
+
+            # =================================================
+            # COMMIT EVERY 100 INVOICES
+            # =================================================
+
+            if created % 100 == 0:
+
+                print(
+                    f"Committing after {created} invoices..."
+                )
+
+                frappe.db.commit()
+
+        # =====================================================
+        # CUSTOMER ERROR
+        # =====================================================
+
+        except Exception:
+
+            frappe.db.rollback()
+
+            failed += 1
+
+            error_message = frappe.get_traceback()
+
+            print(
+                f"Error while creating invoice "
+                f"for {customer.name}"
+            )
+
+            print(error_message)
+
+            frappe.log_error(
+                error_message,
+                f"Monthly Invoice Creation - {customer.name}"
+            )
+
+            continue
+
+    # =========================================================
+    # FINAL COMMIT
+    # =========================================================
+
+    frappe.db.commit()
+
+    # =========================================================
+    # FINAL RESULT
+    # =========================================================
+
+    print("=" * 80)
+    print("Invoice Generation Completed")
+
+    print(f"Created       : {created}")
+    print(f"Skipped       : {skipped}")
+    print(f"Failed        : {failed}")
+    print(f"Stripe Failed : {stripe_failed}")
+
+    print("=" * 80)
+
+    return {
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+        "stripe_failed": stripe_failed
+    }   
+
