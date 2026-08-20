@@ -1014,7 +1014,6 @@ def create_documents_from_stripe_payload(payload=None):
             # -------------------------------------
 
             if field_key == "carplate":
-
                 car_plate = field_value
 
             # -------------------------------------
@@ -1022,7 +1021,6 @@ def create_documents_from_stripe_payload(payload=None):
             # -------------------------------------
 
             elif field_key == "towername":
-
                 tower_name = field_value
 
             # -------------------------------------
@@ -1030,7 +1028,6 @@ def create_documents_from_stripe_payload(payload=None):
             # -------------------------------------
 
             elif field_key == "flatno":
-
                 flat_no = field_value
 
     # -----------------------------------------
@@ -1103,24 +1100,21 @@ def create_documents_from_stripe_payload(payload=None):
 
     if not customer:
 
-        # IMPORTANT:
-        # customer_name = Stripe Customer Details name
-        #
-        # custom_license_plate = car plate
-        # custom_car_plate = same car plate
-        #
-        # Your Customer Naming Rule is:
-        #
-        # format:{customer_name}{custom_license_plate}
-        #
-        # Therefore ERPNext will generate:
-        #
-        # John Smith + ABC123
-        #
-        # as the Customer name automatically.
+        # -----------------------------------------
+        # Customer Validation
+        # -----------------------------------------
+
+        if not customer_name:
+            customer_name = email or "Stripe Customer"
+
+        if not car_plate:
+            car_plate = "NO-PLATE"
+
+        # -----------------------------------------
+        # Create Customer
+        # -----------------------------------------
 
         customer_doc = frappe.get_doc({
-
             "doctype": "Customer",
 
             "customer_name": customer_name,
@@ -1134,8 +1128,8 @@ def create_documents_from_stripe_payload(payload=None):
             "custom_license_plate": car_plate,
 
             "custom_car_plate": car_plate,
-            
-            "custom_created_by_stripe":1,
+
+            "custom_created_by_stripe": 1,
 
             "custom_stripe_tower_name": tower_name,
 
@@ -1158,7 +1152,9 @@ def create_documents_from_stripe_payload(payload=None):
             "Customer",
             customer
         )
-	customer_doc.custom_created_by_stripe = 1
+
+        customer_doc.custom_created_by_stripe = 1
+
         if phone:
             customer_doc.custom_phone_no = phone
 
