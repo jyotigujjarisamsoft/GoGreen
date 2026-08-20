@@ -1134,8 +1134,10 @@ def create_documents_from_stripe_payload(payload=None):
             "custom_license_plate": car_plate,
 
             "custom_car_plate": car_plate,
+            
+            "custom_created_by_stripe":1,
 
-            "custom_tower_name": tower_name,
+            "custom_stripe_tower_name": tower_name,
 
             "custom_flat_no": flat_no
         })
@@ -1156,7 +1158,7 @@ def create_documents_from_stripe_payload(payload=None):
             "Customer",
             customer
         )
-
+	customer_doc.custom_created_by_stripe = 1
         if phone:
             customer_doc.custom_phone_no = phone
 
@@ -1165,7 +1167,7 @@ def create_documents_from_stripe_payload(payload=None):
             customer_doc.custom_car_plate = car_plate
 
         if tower_name:
-            customer_doc.custom_tower_name = tower_name
+            customer_doc.custom_stripe_tower_name = tower_name
 
         if flat_no:
             customer_doc.custom_flat_no = flat_no
