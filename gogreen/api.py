@@ -1635,4 +1635,1108 @@ def create_documents_from_stripe():
         "payment_entry": payment.name
     }
     
-    
+import frappe
+from frappe import _
+
+
+# =========================================================
+# START MONTHLY SALES INVOICE CREATION
+# =========================================================
+
+@frappe.whitelist()
+def new_generate_monthly_sales_invoices(docname):
+
+    """
+    This API only starts the background job.
+
+    It does NOT create invoices inside the web request.
+    """
+
+    if not frappe.db.exists(
+        "Monthly Invoice Creation",
+        docname
+    ):
+        frappe.throw(
+            _("Monthly Invoice Creation {0} does not exist.")
+            .format(docname)
+        )
+
+    # -----------------------------------------------------
+    # CHECK CURRENT STATUS
+    # -----------------------------------------------------
+
+    current_status = frappe.db.get_value(
+        "Monthly Invoice Creation",
+        docname,
+        "status"
+    )
+
+    if current_status == "Processing":
+        return {
+            "status": "already_processing",
+            "message": "Invoice creation is already running."
+        }
+
+    # -----------------------------------------------------
+    # SET STATUS
+    # -----------------------------------------------------
+
+    frappe.db.set_value(
+        "Monthly Invoice Creation",
+        docname,
+        "status",
+        "Processing"
+    )
+
+    frappe.db.commit()
+
+    # -----------------------------------------------------
+    # QUEUE BACKGROUND JOB
+    # -----------------------------------------------------
+
+    frappe.enqueue(
+        "gogreen.api.create_monthly_sales_invoices_background",
+        queue="long",
+        timeout=3600,
+        is_async=True,
+        docname=docname
+    )
+
+
+    return {
+        "status": "queued",
+        "message": (
+            "Sales Invoice creation has been "
+            "started in background."
+        )
+    }
+
+
+# =========================================================
+# BACKGROUND JOB
+# =========================================================
+
+def create_monthly_sales_invoices_background(docname):
+
+    print("=" * 100)
+    print("STARTING MONTHLY SALES INVOICE CREATION")
+    print("Document:", docname)
+    print("=" * 100)
+
+    created = 0
+    skipped = 0
+    failed = 0
+
+    try:
+
+        # -------------------------------------------------
+        # GET MONTHLY INVOICE CREATION DOCUMENT
+        # -------------------------------------------------
+
+        doc = frappe.get_doc(
+            "Monthly Invoice Creation",
+            docname
+        )
+
+        print(
+            "Customer Type:",
+            doc.customer_type
+        )
+
+        print(
+            "Billed Period:",
+            doc.billed_period
+        )
+
+        print(
+            "Posting Date:",
+            doc.date
+        )
+
+        # -------------------------------------------------
+        # GET CUSTOMERS
+        # -------------------------------------------------
+
+        customers = frappe.get_all(
+            "Customer",
+            filters={
+                "custom_customer_typee":
+                    doc.customer_type
+            },
+            fields=[
+                "name",
+                "customer_name",
+                "custom_rate",
+                "custom_cluster",
+                "custom_tower",
+                "custom_parent_name",
+                "custom_grandparent_name",
+                "custom_greatgrandparent_name"
+            ],
+            order_by="name asc"
+        )
+
+        total_customers = len(customers)
+
+        print(
+            "Total Customers:",
+            total_customers
+        )
+
+        # -------------------------------------------------
+        # PROCESS ONE CUSTOMER AT A TIME
+        # -------------------------------------------------
+
+        for index, customer in enumerate(
+            customers,
+            start=1
+        ):
+
+            print("")
+            print("=" * 80)
+            print(
+                f"Processing Customer "
+                f"{index}/{total_customers}"
+            )
+            print(
+                f"Customer Name : {customer.name}"
+            )
+            print(
+                f"Customer       : "
+                f"{customer.customer_name}"
+            )
+            print(
+                f"Rate           : "
+                f"{customer.custom_rate}"
+            )
+            print("=" * 80)
+
+            try:
+
+                # =========================================
+                # CHECK EXISTING SALES INVOICE
+                # =========================================
+
+                existing_invoice = frappe.db.exists(
+                    "Sales Invoice",
+                    {
+                        "customer": customer.name,
+                        "custom_billed_period":
+                            doc.billed_period,
+                        "docstatus": ["!=", 2]
+                    }
+                )
+
+                if existing_invoice:
+
+                    print(
+                        "Invoice already exists:",
+                        existing_invoice
+                    )
+
+                    skipped += 1
+
+                    continue
+
+                # =========================================
+                # VALIDATE RATE
+                # =========================================
+
+                rate = float(
+                    customer.custom_rate or 0
+                )
+
+                if rate <= 0:
+
+                    raise Exception(
+                        f"Invalid rate for customer "
+                        f"{customer.name}: {rate}"
+                    )
+
+                # =========================================
+                # CREATE SALES INVOICE
+                # =========================================
+
+                print(
+                    "Creating Sales Invoice..."
+                )
+
+                si = frappe.new_doc(
+                    "Sales Invoice"
+                )
+
+                # -----------------------------------------
+                # COMPANY
+                # -----------------------------------------
+
+                si.company = "Go Green Cleaning Solution"
+
+                # -----------------------------------------
+                # CURRENCY
+                # -----------------------------------------
+
+                # Keeping your existing currency.
+                #
+                # If your invoice should actually be AED,
+                # change this to:
+                #
+                # si.currency = "AED"
+
+                si.currency = "AED"
+
+                # -----------------------------------------
+                # CUSTOMER
+                # -----------------------------------------
+
+                si.customer = customer.name
+
+                si.posting_date = doc.date
+
+                # =========================================
+                # CUSTOM FIELDS
+                # =========================================
+
+                si.custom_billed_period = (
+                    doc.billed_period
+                )
+
+                si.cluster = (
+                    customer.custom_cluster
+                )
+
+                si.tower = (
+                    customer.custom_tower
+                )
+
+                si.parent_name = (
+                    customer.custom_parent_name
+                )
+
+                si.grandparent_name = (
+                    customer.custom_grandparent_name
+                )
+
+                si.greatgrandparent_name = (
+                    customer.custom_greatgrandparent_name
+                )
+
+                si.disable_rounded_total = 1
+
+                # =========================================
+                # TAX
+                # =========================================
+
+                si.taxes_and_charges = (
+                    "UAE VAT 5% - GG"
+                )
+
+                si.append(
+                    "taxes",
+                    {
+                        "charge_type":
+                            "On Net Total",
+
+                        "account_head":
+                            "UAE VAT 5% - GG",
+
+                        "description":
+                            "VAT 5%",
+
+                        "rate": 5
+                    }
+                )
+
+                # =========================================
+                # ITEM
+                # =========================================
+
+                si.append(
+                    "items",
+                    {
+                        "item_code":
+                            "Go Green Service",
+
+                        "qty":
+                            1,
+
+                        "rate":
+                            rate
+                    }
+                )
+
+                print(
+                    "Item added successfully."
+                )
+
+                # =========================================
+                # INSERT
+                # =========================================
+
+                print(
+                    "Inserting Sales Invoice..."
+                )
+
+                si.insert(
+                    ignore_permissions=True
+                )
+
+                print(
+                    "Invoice inserted:",
+                    si.name
+                )
+
+                # =========================================
+                # CALCULATE TAXES AND TOTALS
+                # =========================================
+
+                print(
+                    "Calculating taxes and totals..."
+                )
+
+                si.calculate_taxes_and_totals()
+
+                print(
+                    "Net Total:",
+                    si.net_total
+                )
+
+                print(
+                    "Tax Total:",
+                    si.total_taxes_and_charges
+                )
+
+                print(
+                    "Grand Total:",
+                    si.grand_total
+                )
+
+                # =========================================
+                # SAVE
+                # =========================================
+
+                si.save(
+                    ignore_permissions=True
+                )
+
+                # =========================================
+                # COMMIT THIS INVOICE
+                # =========================================
+
+                frappe.db.commit()
+
+                created += 1
+
+                print(
+                    f"SUCCESS: {si.name}"
+                )
+
+                # =========================================
+                # PROGRESS
+                # =========================================
+
+                print(
+                    f"Progress: "
+                    f"{index}/{total_customers}"
+                )
+
+            except Exception:
+
+                failed += 1
+
+                error_message = (
+                    frappe.get_traceback()
+                )
+
+                print("")
+                print(
+                    f"FAILED CUSTOMER: "
+                    f"{customer.name}"
+                )
+                print(
+                    error_message
+                )
+
+                frappe.log_error(
+                    error_message,
+                    (
+                        "Monthly Sales Invoice "
+                        f"Creation Failed - "
+                        f"{customer.name}"
+                    )
+                )
+
+                # -----------------------------------------
+                # ROLLBACK ONLY CURRENT TRANSACTION
+                # -----------------------------------------
+
+                frappe.db.rollback()
+
+                # -----------------------------------------
+                # CONTINUE NEXT CUSTOMER
+                # -----------------------------------------
+
+                continue
+
+        # -------------------------------------------------
+        # FINAL COMMIT
+        # -------------------------------------------------
+
+        frappe.db.commit()
+
+        # -------------------------------------------------
+        # UPDATE STATUS
+        # -------------------------------------------------
+
+        frappe.db.set_value(
+            "Monthly Invoice Creation",
+            docname,
+            "status",
+            "Completed"
+        )
+
+        frappe.db.commit()
+
+        # -------------------------------------------------
+        # FINAL LOG
+        # -------------------------------------------------
+
+        print("")
+        print("=" * 100)
+        print("MONTHLY SALES INVOICE CREATION COMPLETED")
+        print("=" * 100)
+
+        print(
+            "Total Customers:",
+            total_customers
+        )
+
+        print(
+            "Created:",
+            created
+        )
+
+        print(
+            "Skipped:",
+            skipped
+        )
+
+        print(
+            "Failed:",
+            failed
+        )
+
+        print("=" * 100)
+
+        return {
+            "total_customers":
+                total_customers,
+
+            "created":
+                created,
+
+            "skipped":
+                skipped,
+
+            "failed":
+                failed
+        }
+
+    except Exception:
+
+        error_message = (
+            frappe.get_traceback()
+        )
+
+        print("")
+        print(
+            "MONTHLY INVOICE JOB FAILED"
+        )
+        print(
+            error_message
+        )
+
+        frappe.log_error(
+            error_message,
+            "Monthly Sales Invoice Background Job"
+        )
+
+        # -------------------------------------------------
+        # UPDATE STATUS TO FAILED
+        # -------------------------------------------------
+
+        try:
+
+            frappe.db.set_value(
+                "Monthly Invoice Creation",
+                docname,
+                "status",
+                "Failed"
+            )
+
+            frappe.db.commit()
+
+        except Exception:
+            pass
+
+        return {
+            "status": "failed",
+            "error": error_message
+        }
+
+import frappe
+import requests
+
+
+@frappe.whitelist()
+def create_payment_links_for_billed_period(docname):
+
+    print("\n" + "=" * 100)
+    print("STARTING PAYMENT LINK CREATION")
+    print("=" * 100)
+
+    # ---------------------------------------------------------
+    # GET MONTHLY INVOICE CREATION DOCUMENT
+    # ---------------------------------------------------------
+
+    print(f"[1] Getting Monthly Invoice Creation document: {docname}")
+
+    doc = frappe.get_doc(
+        "Monthly Invoice Creation",
+        docname
+    )
+
+    billed_period = doc.name
+
+    print(f"[2] Monthly Invoice Creation : {doc.name}")
+    print(f"[3] Billed Period             : {billed_period}")
+
+    # ---------------------------------------------------------
+    # STRIPE KEY
+    # ---------------------------------------------------------
+
+    print("[4] Checking Stripe Secret Key...")
+
+    stripe_secret_key = frappe.conf.get(
+        "stripe_secret_key"
+    )
+
+    if not stripe_secret_key:
+        print("[ERROR] Stripe Secret Key is NOT configured!")
+
+        frappe.throw(
+            "Stripe Secret Key is not configured."
+        )
+
+    print("[5] Stripe Secret Key found.")
+
+    stripe_url = (
+        "https://api.stripe.com/v1/checkout/sessions"
+    )
+
+    created = 0
+    failed = 0
+    batch_number = 0
+
+    # ---------------------------------------------------------
+    # KEEP TAKING 50 RECORDS
+    # ---------------------------------------------------------
+
+    print("\n" + "-" * 100)
+    print("STARTING BATCH PROCESSING")
+    print("Batch Size : 50")
+    print("-" * 100)
+
+    while True:
+
+        batch_number += 1
+
+        print("\n")
+        print("#" * 100)
+        print(f"BATCH {batch_number} STARTED")
+        print("#" * 100)
+
+        # -----------------------------------------------------
+        # GET NEXT 50 INVOICES
+        # -----------------------------------------------------
+
+        print(
+            f"[Batch {batch_number}] Fetching next 50 Sales Invoices..."
+        )
+
+        invoices = frappe.get_all(
+            "Sales Invoice",
+            filters={
+                "custom_billed_period": billed_period,
+                "docstatus": ["!=", 2],
+
+                # IMPORTANT:
+                # Only get invoices which don't have payment link
+                "custom_payment_link": ["is", "not set"]
+            },
+            fields=[
+                "name",
+                "customer",
+                "customer_name",
+                "grand_total"
+            ],
+            order_by="creation asc",
+            limit_page_length=50
+        )
+
+        print(
+            f"[Batch {batch_number}] Invoices fetched: "
+            f"{len(invoices)}"
+        )
+
+        # -----------------------------------------------------
+        # NO MORE INVOICES
+        # -----------------------------------------------------
+
+        if not invoices:
+
+            print("\n" + "=" * 100)
+            print("NO MORE INVOICES FOUND")
+            print("=" * 100)
+
+            break
+
+        # -----------------------------------------------------
+        # SHOW BATCH DETAILS
+        # -----------------------------------------------------
+
+        print(
+            f"[Batch {batch_number}] Processing "
+            f"{len(invoices)} invoices..."
+        )
+
+        print(
+            f"[Batch {batch_number}] First Invoice : "
+            f"{invoices[0].name}"
+        )
+
+        print(
+            f"[Batch {batch_number}] Last Invoice  : "
+            f"{invoices[-1].name}"
+        )
+
+        # -----------------------------------------------------
+        # PROCESS EACH INVOICE
+        # -----------------------------------------------------
+
+        for index, invoice in enumerate(invoices, start=1):
+
+            print("\n")
+            print("-" * 90)
+
+            print(
+                f"[Batch {batch_number}] "
+                f"Invoice {index}/{len(invoices)}"
+            )
+
+            print(
+                f"Invoice Name   : {invoice.name}"
+            )
+
+            print(
+                f"Customer       : {invoice.customer}"
+            )
+
+            print(
+                f"Customer Name  : {invoice.customer_name}"
+            )
+
+            print(
+                f"Grand Total    : {invoice.grand_total}"
+            )
+
+            print("-" * 90)
+
+            try:
+
+                # -------------------------------------------------
+                # GET CUSTOMER EMAIL
+                # -------------------------------------------------
+
+                print(
+                    f"[{invoice.name}] Getting customer email..."
+                )
+
+                customer_email = frappe.db.get_value(
+                    "Customer",
+                    invoice.customer,
+                    "custom_email"
+                )
+
+                print(
+                    f"[{invoice.name}] Customer Email: "
+                    f"{customer_email}"
+                )
+
+                # -------------------------------------------------
+                # CHECK AMOUNT
+                # -------------------------------------------------
+
+                print(
+                    f"[{invoice.name}] Calculating Stripe amount..."
+                )
+
+                stripe_amount = int(
+                    round(
+                        float(invoice.grand_total) * 100
+                    )
+                )
+
+                print(
+                    f"[{invoice.name}] ERPNext Amount: "
+                    f"{invoice.grand_total}"
+                )
+
+                print(
+                    f"[{invoice.name}] Stripe Amount: "
+                    f"{stripe_amount}"
+                )
+
+                if stripe_amount <= 0:
+
+                    print(
+                        f"[{invoice.name}] ERROR: "
+                        f"Invalid Stripe amount!"
+                    )
+
+                    failed += 1
+
+                    frappe.log_error(
+                        f"Invalid Stripe amount: "
+                        f"{stripe_amount}",
+                        f"Payment Link Error - {invoice.name}"
+                    )
+
+                    continue
+
+                # -------------------------------------------------
+                # CREATE STRIPE PAYLOAD
+                # -------------------------------------------------
+
+                print(
+                    f"[{invoice.name}] Preparing Stripe payload..."
+                )
+
+                payload = {
+
+                    "line_items[0][price_data][product_data][name]":
+                        "Go Green Service",
+
+                    "line_items[0][quantity]":
+                        "1",
+
+                    "line_items[0][price_data][unit_amount]":
+                        str(stripe_amount),
+
+                    "line_items[0][price_data][currency]":
+                        "aed",
+
+                    "mode":
+                        "payment",
+
+                    "customer_email":
+                        customer_email or "",
+
+                    # -------------------------------------------------
+                    # SALES INVOICE METADATA
+                    # -------------------------------------------------
+
+                    "metadata[sales_invoice_no]":
+                        invoice.name,
+
+                    "metadata[internal_reference]":
+                        invoice.name,
+
+                    # -------------------------------------------------
+                    # PAYMENT INTENT METADATA
+                    # -------------------------------------------------
+
+                    "payment_intent_data[metadata][sales_invoice_no]":
+                        invoice.name,
+
+                    "payment_intent_data[metadata][order_id]":
+                        invoice.name,
+
+                    "success_url":
+                        "https://gogreen.frappe.cloud/success",
+
+                    "cancel_url":
+                        "https://gogreen.frappe.cloud/cancel"
+                }
+
+                print(
+                    f"[{invoice.name}] Stripe payload prepared."
+                )
+
+                # -------------------------------------------------
+                # CALL STRIPE
+                # -------------------------------------------------
+
+                print(
+                    f"[{invoice.name}] Sending request to Stripe..."
+                )
+
+                response = requests.post(
+                    stripe_url,
+
+                    headers={
+                        "Authorization":
+                            f"Bearer {stripe_secret_key}",
+
+                        "Content-Type":
+                            "application/x-www-form-urlencoded"
+                    },
+
+                    data=payload,
+
+                    timeout=30
+                )
+
+                print(
+                    f"[{invoice.name}] Stripe HTTP Status: "
+                    f"{response.status_code}"
+                )
+
+                # -------------------------------------------------
+                # RESPONSE
+                # -------------------------------------------------
+
+                try:
+
+                    data = response.json()
+
+                    print(
+                        f"[{invoice.name}] Stripe response received."
+                    )
+
+                except Exception:
+
+                    print(
+                        f"[{invoice.name}] ERROR: "
+                        f"Stripe response is not valid JSON."
+                    )
+
+                    print(
+                        f"[{invoice.name}] Raw response:"
+                    )
+
+                    print(response.text)
+
+                    failed += 1
+
+                    frappe.log_error(
+                        response.text,
+                        f"Stripe Invalid Response - {invoice.name}"
+                    )
+
+                    continue
+
+                # -------------------------------------------------
+                # STRIPE ERROR
+                # -------------------------------------------------
+
+                if response.status_code >= 400:
+
+                    print(
+                        f"[{invoice.name}] STRIPE ERROR!"
+                    )
+
+                    print(
+                        f"[{invoice.name}] Stripe Response:"
+                    )
+
+                    print(
+                        frappe.as_json(data)
+                    )
+
+                    failed += 1
+
+                    frappe.log_error(
+                        frappe.as_json(data),
+                        f"Stripe Error - {invoice.name}"
+                    )
+
+                    continue
+
+                # -------------------------------------------------
+                # GET STRIPE SESSION ID
+                # -------------------------------------------------
+
+                checkout_session_id = data.get("id")
+
+                print(
+                    f"[{invoice.name}] "
+                    f"Stripe Checkout Session: "
+                    f"{checkout_session_id}"
+                )
+
+                # -------------------------------------------------
+                # GET PAYMENT LINK
+                # -------------------------------------------------
+
+                payment_link = data.get("url")
+
+                print(
+                    f"[{invoice.name}] "
+                    f"Payment Link: "
+                    f"{payment_link}"
+                )
+
+                if not payment_link:
+
+                    print(
+                        f"[{invoice.name}] ERROR: "
+                        f"Payment link missing from Stripe response!"
+                    )
+
+                    print(
+                        f"[{invoice.name}] Full Stripe Response:"
+                    )
+
+                    print(
+                        frappe.as_json(data)
+                    )
+
+                    failed += 1
+
+                    frappe.log_error(
+                        frappe.as_json(data),
+                        f"Payment Link Missing - {invoice.name}"
+                    )
+
+                    continue
+
+                # -------------------------------------------------
+                # UPDATE SALES INVOICE
+                # -------------------------------------------------
+
+                print(
+                    f"[{invoice.name}] "
+                    f"Updating custom_payment_link..."
+                )
+
+                frappe.db.set_value(
+                    "Sales Invoice",
+                    invoice.name,
+                    "custom_payment_link",
+                    payment_link,
+                    update_modified=False
+                )
+
+                print(
+                    f"[{invoice.name}] "
+                    f"Payment link updated successfully."
+                )
+
+                created += 1
+
+                print(
+                    f"[{invoice.name}] SUCCESS"
+                )
+
+                print(
+                    f"Total Created : {created}"
+                )
+
+                print(
+                    f"Total Failed  : {failed}"
+                )
+
+            except Exception:
+
+                failed += 1
+
+                error_message = frappe.get_traceback()
+
+                print("\n")
+                print("!" * 100)
+
+                print(
+                    f"EXCEPTION FOR INVOICE: {invoice.name}"
+                )
+
+                print("!" * 100)
+
+                print(error_message)
+
+                frappe.log_error(
+                    error_message,
+                    f"Payment Link Error - {invoice.name}"
+                )
+
+                continue
+
+        # ---------------------------------------------------------
+        # COMMIT AFTER EACH 50
+        # ---------------------------------------------------------
+
+        print("\n")
+        print("-" * 100)
+
+        print(
+            f"BATCH {batch_number} COMPLETED"
+        )
+
+        print(
+            f"Batch Size       : {len(invoices)}"
+        )
+
+        print(
+            f"Total Created    : {created}"
+        )
+
+        print(
+            f"Total Failed     : {failed}"
+        )
+
+        print(
+            f"Committing Batch {batch_number}..."
+        )
+
+        frappe.db.commit()
+
+        print(
+            f"Batch {batch_number} COMMITTED SUCCESSFULLY"
+        )
+
+        print("-" * 100)
+
+    # ---------------------------------------------------------
+    # FINAL COMMIT
+    # ---------------------------------------------------------
+
+    print("\n")
+    print("=" * 100)
+    print("PAYMENT LINK CREATION COMPLETED")
+    print("=" * 100)
+
+    frappe.db.commit()
+
+    print(
+        f"Billed Period : {billed_period}"
+    )
+
+    print(
+        f"Total Created : {created}"
+    )
+
+    print(
+        f"Total Failed  : {failed}"
+    )
+
+    print(
+        f"Total Batches : {batch_number}"
+    )
+
+    print("=" * 100)
+
+    return {
+        "billed_period": billed_period,
+        "created": created,
+        "failed": failed,
+        "batches": batch_number
+    }           
