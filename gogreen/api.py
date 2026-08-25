@@ -1843,7 +1843,7 @@ def create_monthly_sales_invoices_background(docname):
                 # =========================================
 
                 rate = float(
-                    customer.custom_rate or 0
+                    customer.custom_rate or 1
                 )
 
                 if rate <= 0:
@@ -1930,21 +1930,12 @@ def create_monthly_sales_invoices_background(docname):
                     "UAE VAT 5% - GG"
                 )
 
-                si.append(
-                    "taxes",
-                    {
-                        "charge_type":
-                            "On Net Total",
-
-                        "account_head":
-                            "UAE VAT 5% - GG",
-
-                        "description":
-                            "VAT 5%",
-
-                        "rate": 5
-                    }
-                )
+                si.append("taxes", {
+		    "charge_type": "On Net Total",
+		    "account_head": "VAT 5% - GG",
+		    "description": "VAT 5%",
+		    "rate": 5
+		})
 
                 # =========================================
                 # ITEM
