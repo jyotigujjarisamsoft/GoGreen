@@ -2373,7 +2373,7 @@ def create_payment_links_for_billed_period(docname):
 
                 stripe_amount = int(
                     round(
-                        float(invoice.grand_total) * 100
+                        float(invoice.grand_total) * 1
                     )
                 )
 
@@ -2730,4 +2730,836 @@ def create_payment_links_for_billed_period(docname):
         "created": created,
         "failed": failed,
         "batches": batch_number
-    }           
+    }  
+    
+    
+import concurrent.futures
+import time
+import requests
+import frappe
+
+from decimal import Decimal, ROUND_HALF_UP
+
+
+@frappe.whitelist()
+def stripe_create_payment_links_for_billed_period(docname):
+
+    print("\n" + "=" * 100)
+    print("STARTING PAYMENT LINK CREATION")
+    print("=" * 100)
+
+    # ---------------------------------------------------------
+    # GET MONTHLY INVOICE CREATION DOCUMENT
+    # ---------------------------------------------------------
+
+    print(f"[1] Getting Monthly Invoice Creation document: {docname}")
+
+    doc = frappe.get_doc(
+        "Monthly Invoice Creation",
+        docname
+    )
+
+    billed_period = doc.name
+
+    print(f"[2] Monthly Invoice Creation : {doc.name}")
+    print(f"[3] Billed Period             : {billed_period}")
+
+    # ---------------------------------------------------------
+    # STRIPE KEY
+    # ---------------------------------------------------------
+
+    print("[4] Checking Stripe Secret Key...")
+
+    stripe_secret_key = frappe.conf.get("stripe_secret_key")
+
+    if not stripe_secret_key:
+        print("[ERROR] Stripe Secret Key is NOT configured!")
+
+        frappe.throw(
+            "Stripe Secret Key is not configured."
+        )
+
+    print("[5] Stripe Secret Key found.")
+
+    stripe_url = "https://api.stripe.com/v1/checkout/sessions"
+
+    created = 0
+    failed = 0
+    batch_number = 0
+
+    # ---------------------------------------------------------
+    # BATCH PROCESSING
+    # ---------------------------------------------------------
+
+    print("\n" + "-" * 100)
+    print("STARTING BATCH PROCESSING")
+    print("Batch Size    : 50")
+    print("Workers       : 10")
+    print("-" * 100)
+
+    while True:
+
+        batch_number += 1
+
+        print("\n")
+        print("#" * 100)
+        print(f"BATCH {batch_number} STARTED")
+        print("#" * 100)
+
+        # -----------------------------------------------------
+        # GET NEXT 50 INVOICES
+        # -----------------------------------------------------
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Fetching next 50 Sales Invoices..."
+        )
+
+        invoices = frappe.get_all(
+            "Sales Invoice",
+            filters={
+                "custom_billed_period": billed_period,
+                "docstatus": ["!=", 2],
+                "custom_payment_link": ["is", "not set"]
+            },
+            fields=[
+                "name",
+                "customer",
+                "customer_name",
+                "grand_total"
+            ],
+            order_by="creation asc",
+            limit_page_length=50
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Invoices fetched: {len(invoices)}"
+        )
+
+        # -----------------------------------------------------
+        # NO MORE INVOICES
+        # -----------------------------------------------------
+
+        if not invoices:
+
+            print("\n" + "=" * 100)
+            print("NO MORE INVOICES FOUND")
+            print("=" * 100)
+
+            break
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Processing {len(invoices)} invoices..."
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"First Invoice : {invoices[0].name}"
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Last Invoice  : {invoices[-1].name}"
+        )
+
+        batch_created = 0
+        batch_failed = 0
+
+        # -----------------------------------------------------
+        # PROCESS 10 REQUESTS CONCURRENTLY
+        # -----------------------------------------------------
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=10
+        ) as executor:
+
+            future_to_invoice = {}
+
+            for index, invoice in enumerate(
+                invoices,
+                start=1
+            ):
+
+                print(
+                    f"[Batch {batch_number}] "
+                    f"Submitting Invoice "
+                    f"{index}/{len(invoices)}: "
+                    f"{invoice.name}"
+                )
+
+                future = executor.submit(
+                    create_single_payment_link,
+                    invoice,
+                    stripe_secret_key,
+                    stripe_url,
+                    batch_number,
+                    index,
+                    len(invoices)
+                )
+
+                future_to_invoice[future] = invoice
+
+                # -------------------------------------------------
+                # SMALL RATE LIMIT DELAY
+                # -------------------------------------------------
+
+                time.sleep(0.05)
+
+            # -----------------------------------------------------
+            # PROCESS RESULTS
+            # -----------------------------------------------------
+
+            for future in concurrent.futures.as_completed(
+                future_to_invoice
+            ):
+
+                invoice = future_to_invoice[future]
+
+                try:
+
+                    result = future.result()
+
+                    # -------------------------------------------------
+                    # SUCCESS
+                    # -------------------------------------------------
+
+                    if result.get("success"):
+
+                        print(
+                            f"[{result['invoice']}] "
+                            f"SUCCESS"
+                        )
+
+                        # -------------------------------------------------
+                        # UPDATE SALES INVOICE
+                        # -------------------------------------------------
+
+                        frappe.db.set_value(
+                            "Sales Invoice",
+                            result["invoice"],
+                            "custom_payment_link",
+                            result["payment_link"],
+                            update_modified=False
+                        )
+
+                        batch_created += 1
+                        created += 1
+
+                        print(
+                            f"[{result['invoice']}] "
+                            f"Payment link updated."
+                        )
+
+                        print(
+                            f"Total Created: {created}"
+                        )
+
+                    # -------------------------------------------------
+                    # FAILED
+                    # -------------------------------------------------
+
+                    else:
+
+                        batch_failed += 1
+                        failed += 1
+
+                        print(
+                            f"[{result['invoice']}] "
+                            f"FAILED"
+                        )
+
+                        print(
+                            f"[{result['invoice']}] "
+                            f"Error: {result['error']}"
+                        )
+
+                        frappe.log_error(
+                            result["error"],
+                            f"Payment Link Error - "
+                            f"{result['invoice']}"
+                        )
+
+                except Exception:
+
+                    batch_failed += 1
+                    failed += 1
+
+                    error_message = frappe.get_traceback()
+
+                    print(
+                        f"[{invoice.name}] "
+                        f"EXCEPTION"
+                    )
+
+                    print(error_message)
+
+                    frappe.log_error(
+                        error_message,
+                        f"Payment Link Exception - "
+                        f"{invoice.name}"
+                    )
+
+        # ---------------------------------------------------------
+        # COMMIT BATCH
+        # ---------------------------------------------------------
+
+        print("\n")
+        print("-" * 100)
+
+        print(
+            f"BATCH {batch_number} COMPLETED"
+        )
+
+        print(
+            f"Batch Size       : {len(invoices)}"
+        )
+
+        print(
+            f"Batch Created    : {batch_created}"
+        )
+
+        print(
+            f"Batch Failed     : {batch_failed}"
+        )
+
+        print(
+            f"Total Created    : {created}"
+        )
+
+        print(
+            f"Total Failed     : {failed}"
+        )
+
+        print(
+            f"Committing Batch {batch_number}..."
+        )
+
+        frappe.db.commit()
+
+        print(
+            f"Batch {batch_number} "
+            f"COMMITTED SUCCESSFULLY"
+        )
+
+        print("-" * 100)
+
+    # ---------------------------------------------------------
+    # FINAL COMMIT
+    # ---------------------------------------------------------
+
+    frappe.db.commit()
+
+    print("\n")
+    print("=" * 100)
+    print("PAYMENT LINK CREATION COMPLETED")
+    print("=" * 100)
+
+    print(
+        f"Billed Period : {billed_period}"
+    )
+
+    print(
+        f"Total Created : {created}"
+    )
+
+    print(
+        f"Total Failed  : {failed}"
+    )
+
+    print(
+        f"Total Batches : {batch_number}"
+    )
+
+    print("=" * 100)
+
+    return {
+        "billed_period": billed_period,
+        "created": created,
+        "failed": failed,
+        "batches": batch_number
+    }
+
+
+# =================================================================
+# CREATE ONE STRIPE CHECKOUT SESSION
+# =================================================================
+
+def create_single_payment_link(
+    invoice,
+    stripe_secret_key,
+    stripe_url,
+    batch_number,
+    index,
+    total
+):
+
+    max_retries = 3
+
+    retry_delay = 1
+
+    for attempt in range(
+        1,
+        max_retries + 1
+    ):
+
+        try:
+
+            print(
+                f"[Batch {batch_number}] "
+                f"[{invoice.name}] "
+                f"Attempt {attempt}/{max_retries}"
+            )
+
+            # -----------------------------------------------------
+            # GET CUSTOMER EMAIL
+            # -----------------------------------------------------
+
+            customer_email = frappe.db.get_value(
+                "Customer",
+                invoice.customer,
+                "custom_email"
+            )
+
+            print(
+                f"[{invoice.name}] "
+                f"Customer Email: "
+                f"{customer_email}"
+            )
+
+            # -----------------------------------------------------
+            # CALCULATE STRIPE AMOUNT
+            # -----------------------------------------------------
+
+            amount = Decimal(
+                str(invoice.grand_total)
+            )
+
+            stripe_amount = int(
+                (
+                    amount * Decimal("100")
+                ).quantize(
+                    Decimal("1"),
+                    rounding=ROUND_HALF_UP
+                )
+            )
+
+            print(
+                f"[{invoice.name}] "
+                f"ERPNext Amount: "
+                f"{invoice.grand_total}"
+            )
+
+            print(
+                f"[{invoice.name}] "
+                f"Stripe Amount: "
+                f"{stripe_amount}"
+            )
+
+            if stripe_amount <= 0:
+
+                return {
+                    "success": False,
+                    "invoice": invoice.name,
+                    "error": (
+                        f"Invalid Stripe amount: "
+                        f"{stripe_amount}"
+                    )
+                }
+
+            # -----------------------------------------------------
+            # STRIPE PAYLOAD
+            # -----------------------------------------------------
+
+            payload = {
+
+                # -------------------------------------------------
+                # PRODUCT
+                # -------------------------------------------------
+
+                "line_items[0][price_data][product_data][name]":
+                    "Go Green Service",
+
+                "line_items[0][quantity]":
+                    "1",
+
+                # -------------------------------------------------
+                # AMOUNT
+                # -------------------------------------------------
+
+                "line_items[0][price_data][unit_amount]":
+                    str(stripe_amount),
+
+                "line_items[0][price_data][currency]":
+                    "aed",
+
+                # -------------------------------------------------
+                # CHECKOUT MODE
+                # -------------------------------------------------
+
+                "mode":
+                    "payment",
+
+                # -------------------------------------------------
+                # CUSTOMER
+                # -------------------------------------------------
+
+                "customer_email":
+                    customer_email or "",
+
+                # -------------------------------------------------
+                # CHECKOUT SESSION METADATA
+                # -------------------------------------------------
+
+                "metadata[sales_invoice_no]":
+                    invoice.name,
+
+                "metadata[internal_reference]":
+                    invoice.name,
+
+                # -------------------------------------------------
+                # PAYMENT INTENT METADATA
+                # -------------------------------------------------
+
+                "payment_intent_data[metadata][sales_invoice_no]":
+                    invoice.name,
+
+                "payment_intent_data[metadata][order_id]":
+                    invoice.name,
+
+                # -------------------------------------------------
+                # REDIRECT URLS
+                # -------------------------------------------------
+
+                "success_url":
+                    "https://gogreen.frappe.cloud/success",
+
+                "cancel_url":
+                    "https://gogreen.frappe.cloud/cancel"
+            }
+
+            print(
+                f"[{invoice.name}] "
+                f"Sending request to Stripe..."
+            )
+
+            # -----------------------------------------------------
+            # STRIPE REQUEST
+            # -----------------------------------------------------
+
+            response = requests.post(
+                stripe_url,
+
+                headers={
+                    "Authorization":
+                        f"Bearer {stripe_secret_key}",
+
+                    "Content-Type":
+                        "application/x-www-form-urlencoded",
+
+                    # -------------------------------------------------
+                    # IMPORTANT:
+                    # Prevent duplicate Checkout Sessions
+                    # if request times out and is retried.
+                    # -------------------------------------------------
+
+                    "Idempotency-Key":
+                        f"erpnext-payment-session-{invoice.name}"
+                },
+
+                data=payload,
+
+                timeout=30
+            )
+
+            print(
+                f"[{invoice.name}] "
+                f"Stripe HTTP Status: "
+                f"{response.status_code}"
+            )
+
+            # -----------------------------------------------------
+            # PARSE RESPONSE
+            # -----------------------------------------------------
+
+            try:
+
+                data = response.json()
+
+            except Exception:
+
+                if attempt < max_retries:
+
+                    print(
+                        f"[{invoice.name}] "
+                        f"Invalid JSON response."
+                    )
+
+                    print(
+                        f"[{invoice.name}] "
+                        f"Retrying in "
+                        f"{retry_delay} seconds..."
+                    )
+
+                    time.sleep(
+                        retry_delay
+                    )
+
+                    continue
+
+                return {
+                    "success": False,
+                    "invoice": invoice.name,
+                    "error": (
+                        "Invalid JSON response from Stripe: "
+                        f"{response.text[:500]}"
+                    )
+                }
+
+            # -----------------------------------------------------
+            # STRIPE ERROR
+            # -----------------------------------------------------
+
+            if response.status_code >= 400:
+
+                error_data = data.get(
+                    "error",
+                    {}
+                )
+
+                error_type = error_data.get(
+                    "type",
+                    "unknown"
+                )
+
+                error_message = error_data.get(
+                    "message",
+                    "Unknown Stripe error"
+                )
+
+                print(
+                    f"[{invoice.name}] "
+                    f"Stripe Error Type: "
+                    f"{error_type}"
+                )
+
+                print(
+                    f"[{invoice.name}] "
+                    f"Stripe Error: "
+                    f"{error_message}"
+                )
+
+                # -------------------------------------------------
+                # RETRY RATE LIMIT
+                # -------------------------------------------------
+
+                if (
+                    error_type == "rate_limit_error"
+                    and attempt < max_retries
+                ):
+
+                    wait_time = retry_delay * 2
+
+                    print(
+                        f"[{invoice.name}] "
+                        f"Rate limit reached."
+                    )
+
+                    print(
+                        f"[{invoice.name}] "
+                        f"Retrying in "
+                        f"{wait_time} seconds..."
+                    )
+
+                    time.sleep(
+                        wait_time
+                    )
+
+                    continue
+
+                # -------------------------------------------------
+                # RETRY TEMPORARY STRIPE ERROR
+                # -------------------------------------------------
+
+                if (
+                    error_type in [
+                        "api_error",
+                        "api_connection_error"
+                    ]
+                    and attempt < max_retries
+                ):
+
+                    print(
+                        f"[{invoice.name}] "
+                        f"Temporary Stripe error."
+                    )
+
+                    print(
+                        f"[{invoice.name}] "
+                        f"Retrying in "
+                        f"{retry_delay} seconds..."
+                    )
+
+                    time.sleep(
+                        retry_delay
+                    )
+
+                    continue
+
+                return {
+                    "success": False,
+                    "invoice": invoice.name,
+                    "error": (
+                        f"Stripe Error "
+                        f"({error_type}): "
+                        f"{error_message}"
+                    )
+                }
+
+            # -----------------------------------------------------
+            # GET CHECKOUT SESSION
+            # -----------------------------------------------------
+
+            checkout_session_id = data.get(
+                "id"
+            )
+
+            payment_link = data.get(
+                "url"
+            )
+
+            print(
+                f"[{invoice.name}] "
+                f"Checkout Session: "
+                f"{checkout_session_id}"
+            )
+
+            print(
+                f"[{invoice.name}] "
+                f"Payment Link: "
+                f"{payment_link}"
+            )
+
+            # -----------------------------------------------------
+            # PAYMENT URL CHECK
+            # -----------------------------------------------------
+
+            if not payment_link:
+
+                return {
+                    "success": False,
+                    "invoice": invoice.name,
+                    "error": (
+                        "Payment link missing from "
+                        f"Stripe response. "
+                        f"Session ID: "
+                        f"{checkout_session_id}"
+                    )
+                }
+
+            # -----------------------------------------------------
+            # SUCCESS
+            # -----------------------------------------------------
+
+            return {
+                "success": True,
+                "invoice": invoice.name,
+                "payment_link": payment_link,
+                "session_id": checkout_session_id
+            }
+
+        # ---------------------------------------------------------
+        # TIMEOUT
+        # ---------------------------------------------------------
+
+        except requests.exceptions.Timeout:
+
+            print(
+                f"[{invoice.name}] "
+                f"Stripe request timeout."
+            )
+
+            if attempt < max_retries:
+
+                print(
+                    f"[{invoice.name}] "
+                    f"Retrying in "
+                    f"{retry_delay} seconds..."
+                )
+
+                time.sleep(
+                    retry_delay
+                )
+
+                continue
+
+            return {
+                "success": False,
+                "invoice": invoice.name,
+                "error": (
+                    f"Stripe request timeout "
+                    f"after {max_retries} attempts"
+                )
+            }
+
+        # ---------------------------------------------------------
+        # NETWORK ERROR
+        # ---------------------------------------------------------
+
+        except requests.exceptions.RequestException as e:
+
+            print(
+                f"[{invoice.name}] "
+                f"Network error: {str(e)}"
+            )
+
+            if attempt < max_retries:
+
+                print(
+                    f"[{invoice.name}] "
+                    f"Retrying in "
+                    f"{retry_delay} seconds..."
+                )
+
+                time.sleep(
+                    retry_delay
+                )
+
+                continue
+
+            return {
+                "success": False,
+                "invoice": invoice.name,
+                "error": (
+                    f"Network error: {str(e)}"
+                )
+            }
+
+        # ---------------------------------------------------------
+        # UNEXPECTED ERROR
+        # ---------------------------------------------------------
+
+        except Exception as e:
+
+            return {
+                "success": False,
+                "invoice": invoice.name,
+                "error": (
+                    f"Unexpected error: {str(e)}\n"
+                    f"{frappe.get_traceback()}"
+                )
+            }
+
+    # -------------------------------------------------------------
+    # SHOULD NEVER REACH HERE
+    # -------------------------------------------------------------
+
+    return {
+        "success": False,
+        "invoice": invoice.name,
+        "error": (
+            f"Failed after "
+            f"{max_retries} attempts"
+        )
+    }         
