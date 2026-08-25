@@ -2741,6 +2741,19 @@ import frappe
 from decimal import Decimal, ROUND_HALF_UP
 
 
+import concurrent.futures
+import time
+import requests
+import frappe
+
+from decimal import Decimal, ROUND_HALF_UP
+
+
+# =================================================================
+# MAIN FUNCTION
+# Frappe DB operations happen ONLY in this main thread
+# =================================================================
+
 @frappe.whitelist()
 def stripe_create_payment_links_for_billed_period(docname):
 
@@ -2748,11 +2761,13 @@ def stripe_create_payment_links_for_billed_period(docname):
     print("STARTING PAYMENT LINK CREATION")
     print("=" * 100)
 
-    # ---------------------------------------------------------
+    # -------------------------------------------------------------
     # GET MONTHLY INVOICE CREATION DOCUMENT
-    # ---------------------------------------------------------
+    # -------------------------------------------------------------
 
-    print(f"[1] Getting Monthly Invoice Creation document: {docname}")
+    print(
+        f"[1] Getting Monthly Invoice Creation document: {docname}"
+    )
 
     doc = frappe.get_doc(
         "Monthly Invoice Creation",
@@ -2761,41 +2776,66 @@ def stripe_create_payment_links_for_billed_period(docname):
 
     billed_period = doc.name
 
-    print(f"[2] Monthly Invoice Creation : {doc.name}")
-    print(f"[3] Billed Period             : {billed_period}")
+    print(
+        f"[2] Monthly Invoice Creation : {doc.name}"
+    )
 
-    # ---------------------------------------------------------
-    # STRIPE KEY
-    # ---------------------------------------------------------
+    print(
+        f"[3] Billed Period             : {billed_period}"
+    )
+
+    # -------------------------------------------------------------
+    # STRIPE SECRET KEY
+    # -------------------------------------------------------------
 
     print("[4] Checking Stripe Secret Key...")
 
-    stripe_secret_key = frappe.conf.get("stripe_secret_key")
+    stripe_secret_key = frappe.conf.get(
+        "stripe_secret_key"
+    )
 
     if not stripe_secret_key:
-        print("[ERROR] Stripe Secret Key is NOT configured!")
+
+        print(
+            "[ERROR] Stripe Secret Key is NOT configured!"
+        )
 
         frappe.throw(
             "Stripe Secret Key is not configured."
         )
 
-    print("[5] Stripe Secret Key found.")
+    print(
+        "[5] Stripe Secret Key found."
+    )
 
-    stripe_url = "https://api.stripe.com/v1/checkout/sessions"
+    stripe_url = (
+        "https://api.stripe.com/v1/checkout/sessions"
+    )
+
+    # -------------------------------------------------------------
+    # COUNTERS
+    # -------------------------------------------------------------
 
     created = 0
     failed = 0
     batch_number = 0
 
-    # ---------------------------------------------------------
-    # BATCH PROCESSING
-    # ---------------------------------------------------------
+    # -------------------------------------------------------------
+    # BATCH SETTINGS
+    # -------------------------------------------------------------
+
+    BATCH_SIZE = 50
+    MAX_WORKERS = 10
 
     print("\n" + "-" * 100)
     print("STARTING BATCH PROCESSING")
-    print("Batch Size    : 50")
-    print("Workers       : 10")
+    print(f"Batch Size    : {BATCH_SIZE}")
+    print(f"Workers       : {MAX_WORKERS}")
     print("-" * 100)
+
+    # =============================================================
+    # KEEP PROCESSING UNTIL NO INVOICES ARE LEFT
+    # =============================================================
 
     while True:
 
@@ -2803,23 +2843,32 @@ def stripe_create_payment_links_for_billed_period(docname):
 
         print("\n")
         print("#" * 100)
-        print(f"BATCH {batch_number} STARTED")
+        print(
+            f"BATCH {batch_number} STARTED"
+        )
         print("#" * 100)
 
-        # -----------------------------------------------------
-        # GET NEXT 50 INVOICES
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # GET NEXT 50 SALES INVOICES
+        #
+        # IMPORTANT:
+        # This DB query is executed in the MAIN Frappe thread.
+        # ---------------------------------------------------------
 
         print(
             f"[Batch {batch_number}] "
-            f"Fetching next 50 Sales Invoices..."
+            f"Fetching next {BATCH_SIZE} Sales Invoices..."
         )
 
         invoices = frappe.get_all(
             "Sales Invoice",
             filters={
                 "custom_billed_period": billed_period,
-                "docstatus": ["!=", 2],
+
+                # Only submitted invoices
+                "docstatus": 1,
+
+                # Do not create duplicate payment links
                 "custom_payment_link": ["is", "not set"]
             },
             fields=[
@@ -2829,7 +2878,7 @@ def stripe_create_payment_links_for_billed_period(docname):
                 "grand_total"
             ],
             order_by="creation asc",
-            limit_page_length=50
+            limit_page_length=BATCH_SIZE
         )
 
         print(
@@ -2837,9 +2886,9 @@ def stripe_create_payment_links_for_billed_period(docname):
             f"Invoices fetched: {len(invoices)}"
         )
 
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
         # NO MORE INVOICES
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
 
         if not invoices:
 
@@ -2867,31 +2916,118 @@ def stripe_create_payment_links_for_billed_period(docname):
         batch_created = 0
         batch_failed = 0
 
-        # -----------------------------------------------------
-        # PROCESS 10 REQUESTS CONCURRENTLY
-        # -----------------------------------------------------
+        # =========================================================
+        # IMPORTANT:
+        #
+        # Fetch ALL customer emails BEFORE creating threads.
+        #
+        # This prevents:
+        #
+        # RuntimeError: object is not bound
+        #
+        # because frappe.db.get_value() stays in the main thread.
+        # =========================================================
+
+        print("\n")
+        print(
+            f"[Batch {batch_number}] "
+            f"Loading customer emails..."
+        )
+
+        invoice_tasks = []
+
+        for index, invoice in enumerate(
+            invoices,
+            start=1
+        ):
+
+            try:
+
+                # -------------------------------------------------
+                # MAIN THREAD - SAFE Frappe DB CALL
+                # -------------------------------------------------
+
+                customer_email = frappe.db.get_value(
+                    "Customer",
+                    invoice.customer,
+                    "custom_email"
+                )
+
+                print(
+                    f"[Batch {batch_number}] "
+                    f"[{invoice.name}] "
+                    f"Customer Email: "
+                    f"{customer_email}"
+                )
+
+                # -------------------------------------------------
+                # Store everything needed by worker
+                #
+                # Worker will NOT access frappe.db
+                # -------------------------------------------------
+
+                invoice_tasks.append({
+                    "invoice": invoice,
+                    "customer_email": customer_email,
+                    "index": index
+                })
+
+            except Exception:
+
+                batch_failed += 1
+                failed += 1
+
+                error_message = frappe.get_traceback()
+
+                print(
+                    f"[{invoice.name}] "
+                    f"Failed to get customer email"
+                )
+
+                print(error_message)
+
+                frappe.log_error(
+                    error_message,
+                    f"Customer Email Error - {invoice.name}"
+                )
+
+        # =========================================================
+        # START 10 CONCURRENT STRIPE WORKERS
+        # =========================================================
+
+        print("\n")
+        print(
+            f"[Batch {batch_number}] "
+            f"Starting {MAX_WORKERS} concurrent workers..."
+        )
 
         with concurrent.futures.ThreadPoolExecutor(
-            max_workers=10
+            max_workers=MAX_WORKERS
         ) as executor:
 
             future_to_invoice = {}
 
-            for index, invoice in enumerate(
-                invoices,
-                start=1
-            ):
+            # -----------------------------------------------------
+            # SUBMIT STRIPE REQUESTS
+            # -----------------------------------------------------
+
+            for task in invoice_tasks:
+
+                invoice = task["invoice"]
+                customer_email = task["customer_email"]
+                index = task["index"]
 
                 print(
                     f"[Batch {batch_number}] "
-                    f"Submitting Invoice "
-                    f"{index}/{len(invoices)}: "
+                    f"Submitting "
+                    f"Invoice {index}/{len(invoices)}: "
                     f"{invoice.name}"
                 )
 
                 future = executor.submit(
                     create_single_payment_link,
                     invoice,
+                    customer_email,
                     stripe_secret_key,
                     stripe_url,
                     batch_number,
@@ -2902,13 +3038,13 @@ def stripe_create_payment_links_for_billed_period(docname):
                 future_to_invoice[future] = invoice
 
                 # -------------------------------------------------
-                # SMALL RATE LIMIT DELAY
+                # Small rate limiting delay
                 # -------------------------------------------------
 
                 time.sleep(0.05)
 
             # -----------------------------------------------------
-            # PROCESS RESULTS
+            # PROCESS COMPLETED STRIPE REQUESTS
             # -----------------------------------------------------
 
             for future in concurrent.futures.as_completed(
@@ -2921,26 +3057,46 @@ def stripe_create_payment_links_for_billed_period(docname):
 
                     result = future.result()
 
-                    # -------------------------------------------------
+                    # =================================================
                     # SUCCESS
-                    # -------------------------------------------------
+                    # =================================================
 
                     if result.get("success"):
 
+                        payment_link = result.get(
+                            "payment_link"
+                        )
+
+                        session_id = result.get(
+                            "session_id"
+                        )
+
+                        print("\n")
                         print(
-                            f"[{result['invoice']}] "
-                            f"SUCCESS"
+                            f"[{invoice.name}] SUCCESS"
+                        )
+
+                        print(
+                            f"[{invoice.name}] "
+                            f"Checkout Session: "
+                            f"{session_id}"
+                        )
+
+                        print(
+                            f"[{invoice.name}] "
+                            f"Payment Link: "
+                            f"{payment_link}"
                         )
 
                         # -------------------------------------------------
-                        # UPDATE SALES INVOICE
+                        # MAIN THREAD - SAFE Frappe DB UPDATE
                         # -------------------------------------------------
 
                         frappe.db.set_value(
                             "Sales Invoice",
-                            result["invoice"],
+                            invoice.name,
                             "custom_payment_link",
-                            result["payment_link"],
+                            payment_link,
                             update_modified=False
                         )
 
@@ -2948,37 +3104,41 @@ def stripe_create_payment_links_for_billed_period(docname):
                         created += 1
 
                         print(
-                            f"[{result['invoice']}] "
-                            f"Payment link updated."
+                            f"[{invoice.name}] "
+                            f"custom_payment_link updated."
                         )
 
                         print(
-                            f"Total Created: {created}"
+                            f"Total Created : {created}"
                         )
 
-                    # -------------------------------------------------
+                    # =================================================
                     # FAILED
-                    # -------------------------------------------------
+                    # =================================================
 
                     else:
 
                         batch_failed += 1
                         failed += 1
 
+                        error_message = result.get(
+                            "error",
+                            "Unknown error"
+                        )
+
+                        print("\n")
                         print(
-                            f"[{result['invoice']}] "
-                            f"FAILED"
+                            f"[{invoice.name}] FAILED"
                         )
 
                         print(
-                            f"[{result['invoice']}] "
-                            f"Error: {result['error']}"
+                            f"[{invoice.name}] "
+                            f"Error: {error_message}"
                         )
 
                         frappe.log_error(
-                            result["error"],
-                            f"Payment Link Error - "
-                            f"{result['invoice']}"
+                            error_message,
+                            f"Payment Link Error - {invoice.name}"
                         )
 
                 except Exception:
@@ -2988,22 +3148,28 @@ def stripe_create_payment_links_for_billed_period(docname):
 
                     error_message = frappe.get_traceback()
 
+                    print("\n")
+                    print("!" * 100)
+
                     print(
-                        f"[{invoice.name}] "
-                        f"EXCEPTION"
+                        f"EXCEPTION FOR INVOICE: "
+                        f"{invoice.name}"
                     )
+
+                    print("!" * 100)
 
                     print(error_message)
 
                     frappe.log_error(
                         error_message,
-                        f"Payment Link Exception - "
-                        f"{invoice.name}"
+                        f"Payment Link Exception - {invoice.name}"
                     )
 
-        # ---------------------------------------------------------
-        # COMMIT BATCH
-        # ---------------------------------------------------------
+        # =========================================================
+        # COMMIT AFTER EACH BATCH
+        #
+        # This is in the MAIN Frappe thread.
+        # =========================================================
 
         print("\n")
         print("-" * 100)
@@ -3045,16 +3211,16 @@ def stripe_create_payment_links_for_billed_period(docname):
 
         print("-" * 100)
 
-    # ---------------------------------------------------------
+    # =============================================================
     # FINAL COMMIT
-    # ---------------------------------------------------------
-
-    frappe.db.commit()
+    # =============================================================
 
     print("\n")
     print("=" * 100)
     print("PAYMENT LINK CREATION COMPLETED")
     print("=" * 100)
+
+    frappe.db.commit()
 
     print(
         f"Billed Period : {billed_period}"
@@ -3083,11 +3249,23 @@ def stripe_create_payment_links_for_billed_period(docname):
 
 
 # =================================================================
-# CREATE ONE STRIPE CHECKOUT SESSION
+# STRIPE WORKER
+#
+# IMPORTANT:
+# This function must NOT call:
+#
+# frappe.db.get_value()
+# frappe.db.set_value()
+# frappe.get_doc()
+# frappe.get_all()
+# frappe.db.commit()
+#
+# It only communicates with Stripe.
 # =================================================================
 
 def create_single_payment_link(
     invoice,
+    customer_email,
     stripe_secret_key,
     stripe_url,
     batch_number,
@@ -3096,7 +3274,6 @@ def create_single_payment_link(
 ):
 
     max_retries = 3
-
     retry_delay = 1
 
     for attempt in range(
@@ -3113,14 +3290,10 @@ def create_single_payment_link(
             )
 
             # -----------------------------------------------------
-            # GET CUSTOMER EMAIL
+            # CUSTOMER EMAIL
+            #
+            # Already fetched by MAIN Frappe thread.
             # -----------------------------------------------------
-
-            customer_email = frappe.db.get_value(
-                "Customer",
-                invoice.customer,
-                "custom_email"
-            )
 
             print(
                 f"[{invoice.name}] "
@@ -3195,14 +3368,14 @@ def create_single_payment_link(
                     "aed",
 
                 # -------------------------------------------------
-                # CHECKOUT MODE
+                # MODE
                 # -------------------------------------------------
 
                 "mode":
                     "payment",
 
                 # -------------------------------------------------
-                # CUSTOMER
+                # CUSTOMER EMAIL
                 # -------------------------------------------------
 
                 "customer_email":
@@ -3229,11 +3402,15 @@ def create_single_payment_link(
                     invoice.name,
 
                 # -------------------------------------------------
-                # REDIRECT URLS
+                # SUCCESS URL
                 # -------------------------------------------------
 
                 "success_url":
                     "https://gogreen.frappe.cloud/success",
+
+                # -------------------------------------------------
+                # CANCEL URL
+                # -------------------------------------------------
 
                 "cancel_url":
                     "https://gogreen.frappe.cloud/cancel"
@@ -3241,12 +3418,17 @@ def create_single_payment_link(
 
             print(
                 f"[{invoice.name}] "
-                f"Sending request to Stripe..."
+                f"Stripe payload prepared."
             )
 
             # -----------------------------------------------------
             # STRIPE REQUEST
             # -----------------------------------------------------
+
+            print(
+                f"[{invoice.name}] "
+                f"Sending request to Stripe..."
+            )
 
             response = requests.post(
                 stripe_url,
@@ -3259,9 +3441,11 @@ def create_single_payment_link(
                         "application/x-www-form-urlencoded",
 
                     # -------------------------------------------------
-                    # IMPORTANT:
-                    # Prevent duplicate Checkout Sessions
-                    # if request times out and is retried.
+                    # IDEMPOTENCY KEY
+                    #
+                    # If Stripe receives the request but ERPNext
+                    # does not receive the response, retrying the
+                    # same invoice will not create another session.
                     # -------------------------------------------------
 
                     "Idempotency-Key":
@@ -3280,21 +3464,26 @@ def create_single_payment_link(
             )
 
             # -----------------------------------------------------
-            # PARSE RESPONSE
+            # PARSE STRIPE RESPONSE
             # -----------------------------------------------------
 
             try:
 
                 data = response.json()
 
+                print(
+                    f"[{invoice.name}] "
+                    f"Stripe response received."
+                )
+
             except Exception:
 
-                if attempt < max_retries:
+                print(
+                    f"[{invoice.name}] "
+                    f"Stripe response is not valid JSON."
+                )
 
-                    print(
-                        f"[{invoice.name}] "
-                        f"Invalid JSON response."
-                    )
+                if attempt < max_retries:
 
                     print(
                         f"[{invoice.name}] "
@@ -3346,12 +3535,12 @@ def create_single_payment_link(
 
                 print(
                     f"[{invoice.name}] "
-                    f"Stripe Error: "
+                    f"Stripe Error Message: "
                     f"{error_message}"
                 )
 
                 # -------------------------------------------------
-                # RETRY RATE LIMIT
+                # RATE LIMIT
                 # -------------------------------------------------
 
                 if (
@@ -3379,7 +3568,7 @@ def create_single_payment_link(
                     continue
 
                 # -------------------------------------------------
-                # RETRY TEMPORARY STRIPE ERROR
+                # TEMPORARY STRIPE/API ERROR
                 # -------------------------------------------------
 
                 if (
@@ -3407,6 +3596,10 @@ def create_single_payment_link(
 
                     continue
 
+                # -------------------------------------------------
+                # PERMANENT ERROR
+                # -------------------------------------------------
+
                 return {
                     "success": False,
                     "invoice": invoice.name,
@@ -3418,21 +3611,25 @@ def create_single_payment_link(
                 }
 
             # -----------------------------------------------------
-            # GET CHECKOUT SESSION
+            # GET CHECKOUT SESSION ID
             # -----------------------------------------------------
 
             checkout_session_id = data.get(
                 "id"
             )
 
-            payment_link = data.get(
-                "url"
-            )
-
             print(
                 f"[{invoice.name}] "
                 f"Checkout Session: "
                 f"{checkout_session_id}"
+            )
+
+            # -----------------------------------------------------
+            # GET PAYMENT URL
+            # -----------------------------------------------------
+
+            payment_link = data.get(
+                "url"
             )
 
             print(
@@ -3442,7 +3639,7 @@ def create_single_payment_link(
             )
 
             # -----------------------------------------------------
-            # PAYMENT URL CHECK
+            # PAYMENT URL MISSING
             # -----------------------------------------------------
 
             if not payment_link:
@@ -3451,8 +3648,7 @@ def create_single_payment_link(
                     "success": False,
                     "invoice": invoice.name,
                     "error": (
-                        "Payment link missing from "
-                        f"Stripe response. "
+                        "Payment link missing from Stripe response. "
                         f"Session ID: "
                         f"{checkout_session_id}"
                     )
@@ -3462,6 +3658,11 @@ def create_single_payment_link(
             # SUCCESS
             # -----------------------------------------------------
 
+            print(
+                f"[{invoice.name}] "
+                f"Stripe Checkout Session created successfully."
+            )
+
             return {
                 "success": True,
                 "invoice": invoice.name,
@@ -3469,9 +3670,9 @@ def create_single_payment_link(
                 "session_id": checkout_session_id
             }
 
-        # ---------------------------------------------------------
+        # =========================================================
         # TIMEOUT
-        # ---------------------------------------------------------
+        # =========================================================
 
         except requests.exceptions.Timeout:
 
@@ -3503,9 +3704,9 @@ def create_single_payment_link(
                 )
             }
 
-        # ---------------------------------------------------------
+        # =========================================================
         # NETWORK ERROR
-        # ---------------------------------------------------------
+        # =========================================================
 
         except requests.exceptions.RequestException as e:
 
@@ -3536,23 +3737,27 @@ def create_single_payment_link(
                 )
             }
 
-        # ---------------------------------------------------------
+        # =========================================================
         # UNEXPECTED ERROR
-        # ---------------------------------------------------------
+        # =========================================================
 
         except Exception as e:
+
+            print(
+                f"[{invoice.name}] "
+                f"Unexpected error: {str(e)}"
+            )
 
             return {
                 "success": False,
                 "invoice": invoice.name,
                 "error": (
-                    f"Unexpected error: {str(e)}\n"
-                    f"{frappe.get_traceback()}"
+                    f"Unexpected error: {str(e)}"
                 )
             }
 
     # -------------------------------------------------------------
-    # SHOULD NEVER REACH HERE
+    # MAX RETRIES EXHAUSTED
     # -------------------------------------------------------------
 
     return {
@@ -3562,4 +3767,4 @@ def create_single_payment_link(
             f"Failed after "
             f"{max_retries} attempts"
         )
-    }         
+    }
