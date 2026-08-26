@@ -3773,8 +3773,14 @@ import frappe
 from frappe.utils import today
 
 
+import frappe
+from frappe.utils import today
+
+
 @frappe.whitelist(allow_guest=True)
 def payment_stripe_webhook():
+
+    original_user = frappe.session.user
 
     try:
 
@@ -3783,6 +3789,9 @@ def payment_stripe_webhook():
         # -----------------------------------------
 
         payload = frappe.request.get_json()
+
+        if not payload:
+            frappe.throw("Empty Stripe payload")
 
         event_type = payload.get("type")
 
@@ -3843,10 +3852,29 @@ def payment_stripe_webhook():
         # Get Sales Invoice
         # -----------------------------------------
 
+        if not frappe.db.exists(
+            "Sales Invoice",
+            invoice_name
+        ):
+
+            frappe.throw(
+                f"Sales Invoice {invoice_name} does not exist"
+            )
+
         invoice = frappe.get_doc(
             "Sales Invoice",
             invoice_name
         )
+
+        # -----------------------------------------
+        # Check Invoice Submitted
+        # -----------------------------------------
+
+        if invoice.docstatus != 1:
+
+            frappe.throw(
+                f"Sales Invoice {invoice_name} is not submitted"
+            )
 
         # -----------------------------------------
         # Customer
@@ -3866,11 +3894,39 @@ def payment_stripe_webhook():
             or 0
         )
 
-        # Stripe amount is in smallest currency unit
-        # Example:
+        # -----------------------------------------
+        # Stripe Amount is in smallest unit
+        #
         # 15000 = AED 150.00
+        # -----------------------------------------
 
         payment_amount = float(stripe_amount) / 100
+
+        if payment_amount <= 0:
+
+            frappe.throw(
+                "Stripe payment amount is zero"
+            )
+
+        # -----------------------------------------
+        # Currency Check
+        # -----------------------------------------
+
+        stripe_currency = (
+            stripe_data.get("currency") or ""
+        ).upper()
+
+        invoice_currency = (
+            invoice.currency or ""
+        ).upper()
+
+        if stripe_currency != invoice_currency:
+
+            frappe.throw(
+                f"Currency mismatch. "
+                f"Stripe: {stripe_currency}, "
+                f"Invoice: {invoice_currency}"
+            )
 
         # -----------------------------------------
         # Check Duplicate Payment
@@ -3888,8 +3944,44 @@ def payment_stripe_webhook():
             return {
                 "success": True,
                 "message": "Payment Entry already exists",
-                "payment_entry": existing_payment
+                "payment_entry": existing_payment,
+                "stripe_payment_id": stripe_payment_id
             }
+
+        # -----------------------------------------
+        # Check Outstanding Amount
+        # -----------------------------------------
+
+        outstanding_amount = float(
+            invoice.outstanding_amount or 0
+        )
+
+        if outstanding_amount <= 0:
+
+            return {
+                "success": True,
+                "message": "Invoice is already fully paid",
+                "sales_invoice": invoice.name,
+                "outstanding_amount": outstanding_amount
+            }
+
+        # -----------------------------------------
+        # Do not allocate more than outstanding
+        # -----------------------------------------
+
+        if payment_amount > outstanding_amount:
+
+            payment_amount = outstanding_amount
+
+        # -----------------------------------------
+        # IMPORTANT
+        #
+        # Webhook is called by Guest.
+        # Switch to Administrator before
+        # creating/submitting Payment Entry.
+        # -----------------------------------------
+
+        frappe.set_user("Administrator")
 
         # -----------------------------------------
         # Create Payment Entry
@@ -3940,7 +4032,9 @@ def payment_stripe_webhook():
         # Paid To Account
         # -----------------------------------------
 
-        payment.paid_to = "Bank of Baroda- Go Green - GG"
+        payment.paid_to = (
+            "Bank of Baroda- Go Green - GG"
+        )
 
         # -----------------------------------------
         # Paid From Account
@@ -3973,33 +4067,73 @@ def payment_stripe_webhook():
         # -----------------------------------------
 
         return {
+
             "success": True,
 
-            "message": "Payment Entry created successfully",
+            "message":
+                "Payment Entry created successfully",
 
-            "payment_entry": payment.name,
+            "payment_entry":
+                payment.name,
 
-            "sales_invoice": invoice.name,
+            "sales_invoice":
+                invoice.name,
 
-            "customer": customer,
+            "customer":
+                customer,
 
-            "amount": payment_amount,
+            "amount":
+                payment_amount,
 
-            "currency": stripe_data.get("currency"),
+            "currency":
+                stripe_currency,
 
-            "stripe_payment_id": stripe_payment_id
+            "mode_of_payment":
+                "Stripe",
+
+            "paid_to":
+                payment.paid_to,
+
+            "stripe_payment_id":
+                stripe_payment_id
         }
 
     except Exception as e:
 
+        # -----------------------------------------
+        # Rollback
+        # -----------------------------------------
+
         frappe.db.rollback()
 
+        # -----------------------------------------
+        # Log Full Error
+        # -----------------------------------------
+
+        error = frappe.get_traceback()
+
         frappe.log_error(
-            frappe.get_traceback(),
+            error,
             "Stripe Payment Entry Error"
         )
 
+        # -----------------------------------------
+        # Return Error
+        # -----------------------------------------
+
         return {
+
             "success": False,
-            "error": str(e)
+
+            "error": str(e),
+
+            "traceback": error
         }
+
+    finally:
+
+        # -----------------------------------------
+        # Restore Original User
+        # -----------------------------------------
+
+        frappe.set_user(original_user)
