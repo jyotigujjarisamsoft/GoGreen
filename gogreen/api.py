@@ -3309,8 +3309,13 @@ def create_single_payment_link(
                 str(invoice.grand_total)
             )
 
-            stripe_amount =  Decimal(
-                str(invoice.grand_total)
+            stripe_amount = int(
+                (
+                    amount * Decimal("100")
+                ).quantize(
+                    Decimal("1"),
+                    rounding=ROUND_HALF_UP
+                )
             )
 
             print(
