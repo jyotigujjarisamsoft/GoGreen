@@ -3768,3 +3768,238 @@ def create_single_payment_link(
             f"{max_retries} attempts"
         )
     }
+    
+import frappe
+from frappe.utils import today
+
+
+@frappe.whitelist(allow_guest=True)
+def payment_stripe_webhook():
+
+    try:
+
+        # -----------------------------------------
+        # Get Stripe Payload
+        # -----------------------------------------
+
+        payload = frappe.request.get_json()
+
+        event_type = payload.get("type")
+
+        data = payload.get("data") or {}
+
+        stripe_data = data.get("object") or {}
+
+        # -----------------------------------------
+        # Only Process Successful Payment Intent
+        # -----------------------------------------
+
+        if event_type != "payment_intent.succeeded":
+
+            return {
+                "success": True,
+                "message": f"Event {event_type} ignored"
+            }
+
+        # -----------------------------------------
+        # Stripe Payment Intent ID
+        # -----------------------------------------
+
+        stripe_payment_id = stripe_data.get("id")
+
+        if not stripe_payment_id:
+
+            frappe.throw(
+                "Stripe Payment Intent ID not found"
+            )
+
+        # -----------------------------------------
+        # Check Payment Status
+        # -----------------------------------------
+
+        if stripe_data.get("status") != "succeeded":
+
+            frappe.throw(
+                "Stripe payment is not successful"
+            )
+
+        # -----------------------------------------
+        # Get Metadata
+        # -----------------------------------------
+
+        metadata = stripe_data.get("metadata") or {}
+
+        invoice_name = metadata.get(
+            "sales_invoice_no"
+        )
+
+        if not invoice_name:
+
+            frappe.throw(
+                "Sales Invoice number not found in Stripe metadata"
+            )
+
+        # -----------------------------------------
+        # Get Sales Invoice
+        # -----------------------------------------
+
+        invoice = frappe.get_doc(
+            "Sales Invoice",
+            invoice_name
+        )
+
+        # -----------------------------------------
+        # Customer
+        # -----------------------------------------
+
+        customer = invoice.customer
+
+        company = invoice.company
+
+        # -----------------------------------------
+        # Payment Amount
+        # -----------------------------------------
+
+        stripe_amount = (
+            stripe_data.get("amount_received")
+            or stripe_data.get("amount")
+            or 0
+        )
+
+        # Stripe amount is in smallest currency unit
+        # Example:
+        # 15000 = AED 150.00
+
+        payment_amount = float(stripe_amount) / 100
+
+        # -----------------------------------------
+        # Check Duplicate Payment
+        # -----------------------------------------
+
+        existing_payment = frappe.db.exists(
+            "Payment Entry",
+            {
+                "reference_no": stripe_payment_id
+            }
+        )
+
+        if existing_payment:
+
+            return {
+                "success": True,
+                "message": "Payment Entry already exists",
+                "payment_entry": existing_payment
+            }
+
+        # -----------------------------------------
+        # Create Payment Entry
+        # -----------------------------------------
+
+        payment = frappe.get_doc({
+
+            "doctype": "Payment Entry",
+
+            "payment_type": "Receive",
+
+            "company": company,
+
+            "party_type": "Customer",
+
+            "party": customer,
+
+            "mode_of_payment": "Stripe",
+
+            "paid_amount": payment_amount,
+
+            "received_amount": payment_amount,
+
+            "reference_no": stripe_payment_id,
+
+            "reference_date": today(),
+
+            "references": [
+                {
+                    "reference_doctype": "Sales Invoice",
+
+                    "reference_name": invoice.name,
+
+                    "allocated_amount": payment_amount
+                }
+            ]
+        })
+
+        # -----------------------------------------
+        # Exchange Rate
+        # -----------------------------------------
+
+        payment.target_exchange_rate = 1
+
+        payment.source_exchange_rate = 1
+
+        # -----------------------------------------
+        # Paid To Account
+        # -----------------------------------------
+
+        payment.paid_to = "Bank of Baroda- Go Green - GG"
+
+        # -----------------------------------------
+        # Paid From Account
+        # -----------------------------------------
+
+        payment.paid_from = invoice.debit_to
+
+        # -----------------------------------------
+        # Insert Payment
+        # -----------------------------------------
+
+        payment.insert(
+            ignore_permissions=True
+        )
+
+        # -----------------------------------------
+        # Submit Payment
+        # -----------------------------------------
+
+        payment.submit()
+
+        # -----------------------------------------
+        # Commit
+        # -----------------------------------------
+
+        frappe.db.commit()
+
+        # -----------------------------------------
+        # Response
+        # -----------------------------------------
+
+        return {
+            "success": True,
+
+            "message": "Payment Entry created successfully",
+
+            "payment_entry": payment.name,
+
+            "sales_invoice": invoice.name,
+
+            "customer": customer,
+
+            "amount": payment_amount,
+
+            "currency": stripe_data.get("currency"),
+
+            "stripe_payment_id": stripe_payment_id
+        }
+
+    except Exception as e:
+
+        frappe.db.rollback()
+
+        frappe.log_error(
+            frappe.get_traceback(),
+            "Stripe Payment Entry Error"
+        )
+
+        return {
+            "success": False,
+            "error": str(e)
+        }
