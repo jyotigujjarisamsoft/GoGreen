@@ -2866,7 +2866,7 @@ def stripe_create_payment_links_for_billed_period(docname):
                 "custom_billed_period": billed_period,
 
                 # Only submitted invoices
-                "docstatus": 1,
+                "docstatus": 0,
 
                 # Do not create duplicate payment links
                 "custom_payment_link": ["is", "not set"]
@@ -3309,13 +3309,8 @@ def create_single_payment_link(
                 str(invoice.grand_total)
             )
 
-            stripe_amount = int(
-                (
-                    amount * Decimal("100")
-                ).quantize(
-                    Decimal("1"),
-                    rounding=ROUND_HALF_UP
-                )
+            stripe_amount =  Decimal(
+                str(invoice.grand_total)
             )
 
             print(
