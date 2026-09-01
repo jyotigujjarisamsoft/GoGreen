@@ -1639,8 +1639,13 @@ import frappe
 from frappe import _
 
 
+import frappe
+from frappe import _
+from decimal import Decimal
+
+
 # =========================================================
-# START MONTHLY SALES INVOICE CREATION
+# START API
 # =========================================================
 
 @frappe.whitelist()
@@ -1672,6 +1677,7 @@ def new_generate_monthly_sales_invoices(docname):
     )
 
     if current_status == "Processing":
+
         return {
             "status": "already_processing",
             "message": "Invoice creation is already running."
@@ -1702,11 +1708,10 @@ def new_generate_monthly_sales_invoices(docname):
         docname=docname
     )
 
-
     return {
         "status": "queued",
         "message": (
-            "Sales Invoice creation has been "
+            "Sales Invoice creation has "
             "started in background."
         )
     }
@@ -1759,10 +1764,12 @@ def create_monthly_sales_invoices_background(docname):
 
         customers = frappe.get_all(
             "Customer",
+
             filters={
                 "custom_customer_typee":
                     doc.customer_type
             },
+
             fields=[
                 "name",
                 "customer_name",
@@ -1773,6 +1780,7 @@ def create_monthly_sales_invoices_background(docname):
                 "custom_grandparent_name",
                 "custom_greatgrandparent_name"
             ],
+
             order_by="name asc"
         )
 
@@ -1793,23 +1801,34 @@ def create_monthly_sales_invoices_background(docname):
         ):
 
             print("")
-            print("=" * 80)
+            print("=" * 100)
+
             print(
                 f"Processing Customer "
                 f"{index}/{total_customers}"
             )
+
             print(
-                f"Customer Name : {customer.name}"
+                f"Customer ID   : "
+                f"{customer.name}"
             )
+
             print(
-                f"Customer       : "
+                f"Customer Name : "
                 f"{customer.customer_name}"
             )
+
             print(
-                f"Rate           : "
+                f"Rate          : "
                 f"{customer.custom_rate}"
             )
-            print("=" * 80)
+
+            print(
+                f"GreatGrandParent : "
+                f"{customer.custom_greatgrandparent_name}"
+            )
+
+            print("=" * 100)
 
             try:
 
@@ -1821,9 +1840,12 @@ def create_monthly_sales_invoices_background(docname):
                     "Sales Invoice",
                     {
                         "customer": customer.name,
+
                         "custom_billed_period":
                             doc.billed_period,
-                        "docstatus": ["!=", 2]
+
+                        "docstatus":
+                            ["!=", 2]
                     }
                 )
 
@@ -1854,6 +1876,56 @@ def create_monthly_sales_invoices_background(docname):
                     )
 
                 # =========================================
+                # GREAT GRANDPARENT
+                # =========================================
+
+                greatgrandparent_name = (
+                    customer.custom_greatgrandparent_name
+                    or ""
+                ).strip()
+
+                # =========================================
+                # INCOME ACCOUNT MAPPING
+                # =========================================
+
+                income_account_map = {
+
+                    "Downtown":
+                        "Sales-Downtown - GG",
+
+                    "Dubai Hills":
+                        "Sales-Dubai Hills - GG",
+
+                    "JLT":
+                        "Sales-JLT - GG",
+
+                    "Palm Jumeirah":
+                        "Sales-Palm Jumeirah - GG",
+
+                    "Creek Harbour":
+                        "Sales-Creek Harbour - GG"
+                }
+
+                # -----------------------------------------
+                # GET INCOME ACCOUNT
+                # -----------------------------------------
+
+                income_account = income_account_map.get(
+                    greatgrandparent_name,
+                    "Temporary Opening - GG"
+                )
+
+                print(
+                    f"Great Grandparent : "
+                    f"{greatgrandparent_name}"
+                )
+
+                print(
+                    f"Income Account    : "
+                    f"{income_account}"
+                )
+
+                # =========================================
                 # CREATE SALES INVOICE
                 # =========================================
 
@@ -1869,18 +1941,13 @@ def create_monthly_sales_invoices_background(docname):
                 # COMPANY
                 # -----------------------------------------
 
-                si.company = "Go Green Cleaning Solution"
+                si.company = (
+                    "Go Green Cleaning Solution"
+                )
 
                 # -----------------------------------------
                 # CURRENCY
                 # -----------------------------------------
-
-                # Keeping your existing currency.
-                #
-                # If your invoice should actually be AED,
-                # change this to:
-                #
-                # si.currency = "AED"
 
                 si.currency = "AED"
 
@@ -1889,6 +1956,10 @@ def create_monthly_sales_invoices_background(docname):
                 # -----------------------------------------
 
                 si.customer = customer.name
+
+                # -----------------------------------------
+                # POSTING DATE
+                # -----------------------------------------
 
                 si.posting_date = doc.date
 
@@ -1916,6 +1987,13 @@ def create_monthly_sales_invoices_background(docname):
                     customer.custom_grandparent_name
                 )
 
+                # -------------------------------------------------
+                # IMPORTANT:
+                # Screenshot shows field name:
+                #
+                # greatgrandparent_name
+                # -------------------------------------------------
+
                 si.greatgrandparent_name = (
                     customer.custom_greatgrandparent_name
                 )
@@ -1930,16 +2008,30 @@ def create_monthly_sales_invoices_background(docname):
                     "UAE VAT 5% - GG"
                 )
 
-                si.append("taxes", {
-		    "charge_type": "On Net Total",
-		    "account_head": "VAT 5% - GG",
-		    "description": "VAT 5%",
-		    "rate": 5
-		})
+                si.append(
+                    "taxes",
+                    {
+                        "charge_type":
+                            "On Net Total",
+
+                        "account_head":
+                            "VAT 5% - GG",
+
+                        "description":
+                            "VAT 5%",
+
+                        "rate":
+                            5
+                    }
+                )
 
                 # =========================================
                 # ITEM
                 # =========================================
+
+                print(
+                    "Adding item..."
+                )
 
                 si.append(
                     "items",
@@ -1951,12 +2043,24 @@ def create_monthly_sales_invoices_background(docname):
                             1,
 
                         "rate":
-                            rate
+                            rate,
+
+                        # ---------------------------------
+                        # INCOME ACCOUNT
+                        # ---------------------------------
+
+                        "income_account":
+                            income_account
                     }
                 )
 
                 print(
                     "Item added successfully."
+                )
+
+                print(
+                    f"Item Income Account: "
+                    f"{income_account}"
                 )
 
                 # =========================================
@@ -2021,9 +2125,15 @@ def create_monthly_sales_invoices_background(docname):
                     f"SUCCESS: {si.name}"
                 )
 
-                # =========================================
-                # PROGRESS
-                # =========================================
+                print(
+                    f"GreatGrandParent: "
+                    f"{greatgrandparent_name}"
+                )
+
+                print(
+                    f"Income Account: "
+                    f"{income_account}"
+                )
 
                 print(
                     f"Progress: "
@@ -2043,6 +2153,7 @@ def create_monthly_sales_invoices_background(docname):
                     f"FAILED CUSTOMER: "
                     f"{customer.name}"
                 )
+
                 print(
                     error_message
                 )
@@ -2057,7 +2168,7 @@ def create_monthly_sales_invoices_background(docname):
                 )
 
                 # -----------------------------------------
-                # ROLLBACK ONLY CURRENT TRANSACTION
+                # ROLLBACK CURRENT TRANSACTION
                 # -----------------------------------------
 
                 frappe.db.rollback()
@@ -2093,7 +2204,9 @@ def create_monthly_sales_invoices_background(docname):
 
         print("")
         print("=" * 100)
-        print("MONTHLY SALES INVOICE CREATION COMPLETED")
+        print(
+            "MONTHLY SALES INVOICE CREATION COMPLETED"
+        )
         print("=" * 100)
 
         print(
@@ -2119,6 +2232,7 @@ def create_monthly_sales_invoices_background(docname):
         print("=" * 100)
 
         return {
+
             "total_customers":
                 total_customers,
 
@@ -2142,6 +2256,7 @@ def create_monthly_sales_invoices_background(docname):
         print(
             "MONTHLY INVOICE JOB FAILED"
         )
+
         print(
             error_message
         )
@@ -2167,13 +2282,16 @@ def create_monthly_sales_invoices_background(docname):
             frappe.db.commit()
 
         except Exception:
+
             pass
 
         return {
-            "status": "failed",
-            "error": error_message
-        }
+            "status":
+                "failed",
 
+            "error":
+                error_message
+        }
 import frappe
 import requests
 
@@ -3449,6 +3567,8 @@ def create_single_payment_link(
 
                 "line_items[0][quantity]":
                     "1",
+                    
+                 "restrictions[completed_sessions][limit]":"1",   
 
                 # -------------------------------------------------
                 # PAYMENT INTENT METADATA
