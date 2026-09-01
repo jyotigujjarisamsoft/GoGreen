@@ -2754,7 +2754,6 @@ from decimal import Decimal, ROUND_HALF_UP
 # Frappe DB operations happen ONLY in this main thread
 # =================================================================
 
-```python
 import frappe
 import requests
 import concurrent.futures
@@ -3925,7 +3924,7 @@ def create_single_payment_link(
                 f"{max_retries} attempts"
             )
     }
-```
+
 
 
 
