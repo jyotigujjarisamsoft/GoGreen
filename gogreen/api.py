@@ -1766,9 +1766,10 @@ def create_monthly_sales_invoices_background(docname):
             "Customer",
 
             filters={
-                "custom_customer_typee":
-                    doc.customer_type
-            },
+        "custom_customer_typee": doc.customer_type,
+        "custom_status": ["in", ["Active", "Partial"]]
+    },
+
 
             fields=[
                 "name",
@@ -1778,7 +1779,8 @@ def create_monthly_sales_invoices_background(docname):
                 "custom_tower",
                 "custom_parent_name",
                 "custom_grandparent_name",
-                "custom_greatgrandparent_name"
+                "custom_greatgrandparent_name",
+                "custom_status"
             ],
 
             order_by="name asc"
