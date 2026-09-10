@@ -4414,3 +4414,712 @@ def payment_stripe_webhook():
         # -----------------------------------------
 
         frappe.set_user(original_user)
+        
+import frappe
+
+
+@frappe.whitelist(allow_guest=True)
+def get_towers_by_greatgrandparent(greatgrandparent_name):
+
+    if not greatgrandparent_name:
+        return []
+
+    towers = frappe.get_all(
+        "Tower",
+        filters={
+            "greatgrandparent_name": greatgrandparent_name
+        },
+        fields=["name"],
+        order_by="name asc"
+    )
+
+    return [tower.name for tower in towers]
+    
+
+@frappe.whitelist(allow_guest=True)
+def create_partial_invoice_and_payment(customer_name):
+    """
+    Create partial Sales Invoice and Payment Entry
+    for a customer created from the 105 AED Customer Web Form.
+
+    Payment Entry:
+        - Paid amount = full monthly rate
+        - Allocated amount = newly created Sales Invoice amount
+        - Remaining amount = unallocated customer advance
+
+    Fields:
+        custom_rate
+        custom_partial_start_date
+        custom_sun
+        custom_mon
+        custom_tues
+        custom_wed
+        custom_thur
+        custom_fri
+    """
+
+    try:
+
+        # ---------------------------------------------------------
+        # GET CUSTOMER
+        # ---------------------------------------------------------
+
+        if not customer_name:
+            frappe.throw("Customer name is required")
+
+        customer = frappe.get_doc(
+            "Customer",
+            customer_name
+        )
+
+        print("======================================")
+        print("CUSTOMER:", customer.name)
+        print("======================================")
+
+        # ---------------------------------------------------------
+        # GET RATE
+        # ---------------------------------------------------------
+
+        monthly_rate = float(
+            customer.get("custom_rate") or 0
+        )
+
+        if monthly_rate <= 0:
+            frappe.throw(
+                "Customer Rate must be greater than 0"
+            )
+
+        print(
+            "Monthly Rate:",
+            monthly_rate
+        )
+
+        # ---------------------------------------------------------
+        # GET PARTIAL START DATE
+        # ---------------------------------------------------------
+
+        partial_start_date = customer.get(
+            "custom_partial_start_date"
+        )
+
+        if not partial_start_date:
+            frappe.throw(
+                "Partial Start Date is required"
+            )
+
+        partial_start_date = getdate(
+            partial_start_date
+        )
+
+        print(
+            "Partial Start Date:",
+            partial_start_date
+        )
+
+        # ---------------------------------------------------------
+        # GET SELECTED WEEKDAYS
+        # ---------------------------------------------------------
+
+        selected_days = []
+
+        if customer.get("custom_sun"):
+            selected_days.append(6)
+
+        if customer.get("custom_mon"):
+            selected_days.append(0)
+
+        if customer.get("custom_tues"):
+            selected_days.append(1)
+
+        if customer.get("custom_wed"):
+            selected_days.append(2)
+
+        if customer.get("custom_thur"):
+            selected_days.append(3)
+
+        if customer.get("custom_fri"):
+            selected_days.append(4)
+
+        print(
+            "Selected Weekday Numbers:",
+            selected_days
+        )
+
+        if not selected_days:
+            frappe.throw(
+                "Please select at least one washing day"
+            )
+
+        print(
+            "Number of Selected Days Per Week:",
+            len(selected_days)
+        )
+
+        # ---------------------------------------------------------
+        # STANDARD MONTHLY WASHES
+        # ---------------------------------------------------------
+        #
+        # 1 day/week = 4 washes
+        # 2 days/week = 8 washes
+        # 3+ days/week = 12 washes
+        #
+        # Maximum is always 12.
+        # Extra calendar occurrences are ignored.
+        # ---------------------------------------------------------
+
+        days_per_week = len(selected_days)
+
+        if days_per_week == 1:
+
+            standard_monthly_washes = 4
+
+        elif days_per_week == 2:
+
+            standard_monthly_washes = 8
+
+        else:
+
+            standard_monthly_washes = 12
+
+        print(
+            "Standard Monthly Washes:",
+            standard_monthly_washes
+        )
+
+        # ---------------------------------------------------------
+        # MONTH START / MONTH END
+        # ---------------------------------------------------------
+
+        month_start = get_first_day(
+            partial_start_date
+        )
+
+        month_end = get_last_day(
+            partial_start_date
+        )
+
+        print(
+            "Month Start:",
+            month_start
+        )
+
+        print(
+            "Month End:",
+            month_end
+        )
+
+        # ---------------------------------------------------------
+        # COUNT SELECTED DAYS FROM PARTIAL START DATE
+        # TO MONTH END
+        # ---------------------------------------------------------
+
+        partial_washes = 0
+
+        current_date = partial_start_date
+
+        while current_date <= month_end:
+
+            weekday_number = current_date.weekday()
+
+            if weekday_number in selected_days:
+
+                partial_washes += 1
+
+            current_date = frappe.utils.add_days(
+                current_date,
+                1
+            )
+
+        print(
+            "Actual Partial Wash Occurrences:",
+            partial_washes
+        )
+
+        # ---------------------------------------------------------
+        # NEVER ALLOW MORE THAN STANDARD MONTHLY WASHES
+        # ---------------------------------------------------------
+
+        partial_washes = min(
+            partial_washes,
+            standard_monthly_washes
+        )
+
+        print(
+            "Final Partial Washes:",
+            partial_washes
+        )
+
+        if partial_washes <= 0:
+
+            frappe.throw(
+                "No selected washing days are available "
+                "from the partial start date until month end"
+            )
+
+        # ---------------------------------------------------------
+        # CALCULATE PER WASH RATE
+        # ---------------------------------------------------------
+
+        per_wash_rate = (
+            monthly_rate
+            / standard_monthly_washes
+        )
+
+        # ---------------------------------------------------------
+        # CALCULATE PARTIAL INVOICE AMOUNT
+        # ---------------------------------------------------------
+
+        invoice_amount = (
+            per_wash_rate
+            * partial_washes
+        )
+
+        invoice_amount = round(
+            invoice_amount,
+            2
+        )
+
+        # ---------------------------------------------------------
+        # CALCULATE REMAINING AMOUNT
+        # ---------------------------------------------------------
+        #
+        # This is only for information.
+        #
+        # Payment Entry will be created for FULL monthly_rate.
+        # Invoice amount will be allocated.
+        # Difference will remain unallocated.
+        # ---------------------------------------------------------
+
+        remaining_amount = (
+            monthly_rate
+            - invoice_amount
+        )
+
+        remaining_amount = round(
+            remaining_amount,
+            2
+        )
+
+        print(
+            "Per Wash Rate:",
+            per_wash_rate
+        )
+
+        print(
+            "Invoice Amount:",
+            invoice_amount
+        )
+
+        print(
+            "Remaining / Unallocated Amount:",
+            remaining_amount
+        )
+
+        # ---------------------------------------------------------
+        # PREVENT DUPLICATE INVOICE
+        # ---------------------------------------------------------
+
+        existing_invoice = frappe.db.exists(
+            "Sales Invoice",
+            {
+                "customer": customer.name,
+                "posting_date": partial_start_date,
+                "custom_partial_start_date": partial_start_date
+            }
+        )
+
+        if existing_invoice:
+
+            frappe.throw(
+                f"Sales Invoice {existing_invoice} already exists "
+                f"for this customer and start date."
+            )
+
+        # ---------------------------------------------------------
+        # GET CUSTOMER GREAT GRANDPARENT
+        # ---------------------------------------------------------
+
+        greatgrandparent_name = customer.get(
+            "custom_greatgrandparent_name"
+        )
+
+        print(
+            "Great Grandparent:",
+            greatgrandparent_name
+        )
+
+        # ---------------------------------------------------------
+        # INCOME ACCOUNT
+        # ---------------------------------------------------------
+
+        income_account_map = {
+
+            "Downtown":
+                "Sales-Downtown - GG",
+
+            "Dubai Hills":
+                "Sales-Dubai Hills - GG",
+
+            "JLT":
+                "Sales-JLT - GG",
+
+            "Palm Jumeirah":
+                "Sales-Palm Jumeirah - GG",
+
+            "Creek Harbour":
+                "Sales-Creek Harbour - GG"
+        }
+
+        income_account = income_account_map.get(
+            greatgrandparent_name,
+            "Temporary Opening - GG"
+        )
+
+        print(
+            "Income Account:",
+            income_account
+        )
+
+        # ---------------------------------------------------------
+        # CREATE SALES INVOICE
+        # ---------------------------------------------------------
+
+        invoice = frappe.new_doc(
+            "Sales Invoice"
+        )
+
+        invoice.customer = customer.name
+
+        # IMPORTANT:
+        # Posting date = partial start date
+        invoice.posting_date = partial_start_date
+
+        invoice.due_date = partial_start_date
+
+        # ---------------------------------------------------------
+        # CUSTOM FIELDS
+        # ---------------------------------------------------------
+
+        if invoice.meta.has_field(
+            "custom_partial_start_date"
+        ):
+
+            invoice.custom_partial_start_date = (
+                partial_start_date
+            )
+
+        # ---------------------------------------------------------
+        # ADD ITEM
+        # ---------------------------------------------------------
+
+        invoice.append(
+            "items",
+            {
+                "item_code": "Go Green service",
+                "qty": 1,
+                "rate": invoice_amount,
+
+                # Use calculated income account
+                "income_account": income_account
+            }
+        )
+
+        # ---------------------------------------------------------
+        # TAX TEMPLATE
+        # ---------------------------------------------------------
+        #
+        # Use your existing VAT 5% template.
+        # ---------------------------------------------------------
+
+        if frappe.db.exists(
+            "Sales Taxes and Charges Template",
+            "VAT 5% - GG"
+        ):
+
+            invoice.taxes_and_charges = (
+                "VAT 5% - GG"
+            )
+
+        # ---------------------------------------------------------
+        # SAVE AND SUBMIT INVOICE
+        # ---------------------------------------------------------
+
+        invoice.insert(
+            ignore_permissions=True
+        )
+
+        invoice.submit()
+
+        print(
+            "Sales Invoice Created:",
+            invoice.name
+        )
+
+        print(
+            "Sales Invoice Grand Total:",
+            invoice.grand_total
+        )
+
+        print(
+            "Sales Invoice Outstanding:",
+            invoice.outstanding_amount
+        )
+
+        # ---------------------------------------------------------
+        # CREATE PAYMENT ENTRY FOR FULL MONTHLY RATE
+        # ---------------------------------------------------------
+        #
+        # Example:
+        #
+        # Monthly Rate       = 105
+        # Invoice Grand Total = 52.50
+        #
+        # Payment Entry:
+        # Paid Amount        = 105
+        # Allocated          = 52.50
+        # Unallocated        = 52.50
+        #
+        # ---------------------------------------------------------
+
+        payment_entry_name = None
+
+        payment_entry = frappe.new_doc(
+            "Payment Entry"
+        )
+
+        # ---------------------------------------------------------
+        # PAYMENT TYPE
+        # ---------------------------------------------------------
+
+        payment_entry.payment_type = "Receive"
+
+        # ---------------------------------------------------------
+        # PARTY
+        # ---------------------------------------------------------
+
+        payment_entry.party_type = "Customer"
+
+        payment_entry.party = customer.name
+
+        # ---------------------------------------------------------
+        # POSTING DATE
+        # ---------------------------------------------------------
+
+        payment_entry.posting_date = (
+            partial_start_date
+        )
+
+        # ---------------------------------------------------------
+        # FULL PAYMENT AMOUNT
+        # ---------------------------------------------------------
+        #
+        # IMPORTANT:
+        # Create Payment Entry for the FULL monthly rate.
+        # ---------------------------------------------------------
+
+        payment_entry.paid_amount = monthly_rate
+
+        payment_entry.received_amount = monthly_rate
+
+        print(
+            "Payment Entry Full Amount:",
+            monthly_rate
+        )
+
+        # ---------------------------------------------------------
+        # PAYMENT ACCOUNT
+        # ---------------------------------------------------------
+
+        payment_entry.paid_to = (
+            "Bank of Baroda- Go Green - GG"
+        )
+
+        # ---------------------------------------------------------
+        # ALLOCATE PAYMENT TO NEW SALES INVOICE
+        # ---------------------------------------------------------
+
+        allocated_amount = min(
+            monthly_rate,
+            invoice.outstanding_amount
+        )
+
+        print(
+            "Amount To Allocate:",
+            allocated_amount
+        )
+
+        payment_entry.append(
+            "references",
+            {
+                "reference_doctype":
+                    "Sales Invoice",
+
+                "reference_name":
+                    invoice.name,
+
+                "total_amount":
+                    invoice.grand_total,
+
+                "outstanding_amount":
+                    invoice.outstanding_amount,
+
+                "allocated_amount":
+                    allocated_amount
+            }
+        )
+
+        # ---------------------------------------------------------
+        # INSERT PAYMENT ENTRY
+        # ---------------------------------------------------------
+
+        payment_entry.insert(
+            ignore_permissions=True
+        )
+
+        print(
+            "Payment Entry Inserted:",
+            payment_entry.name
+        )
+
+        # ---------------------------------------------------------
+        # SUBMIT PAYMENT ENTRY
+        # ---------------------------------------------------------
+
+        payment_entry.submit()
+
+        payment_entry_name = (
+            payment_entry.name
+        )
+
+        print(
+            "Payment Entry Submitted:",
+            payment_entry.name
+        )
+
+        # ---------------------------------------------------------
+        # CALCULATE EXPECTED UNALLOCATED
+        # ---------------------------------------------------------
+
+        expected_unallocated = round(
+            monthly_rate
+            - allocated_amount,
+            2
+        )
+
+        print(
+            "Expected Unallocated Amount:",
+            expected_unallocated
+        )
+
+        # ---------------------------------------------------------
+        # COMMIT
+        # ---------------------------------------------------------
+
+        frappe.db.commit()
+
+        print(
+            "======================================"
+        )
+
+        print(
+            "PROCESS COMPLETED SUCCESSFULLY"
+        )
+
+        print(
+            "Customer:",
+            customer.name
+        )
+
+        print(
+            "Sales Invoice:",
+            invoice.name
+        )
+
+        print(
+            "Payment Entry:",
+            payment_entry.name
+        )
+
+        print(
+            "Payment Amount:",
+            monthly_rate
+        )
+
+        print(
+            "Allocated Amount:",
+            allocated_amount
+        )
+
+        print(
+            "Unallocated Amount:",
+            expected_unallocated
+        )
+
+        print(
+            "======================================"
+        )
+
+        # ---------------------------------------------------------
+        # RETURN RESULT
+        # ---------------------------------------------------------
+
+        return {
+
+            "success": True,
+
+            "customer":
+                customer.name,
+
+            "monthly_rate":
+                monthly_rate,
+
+            "selected_days_per_week":
+                days_per_week,
+
+            "standard_monthly_washes":
+                standard_monthly_washes,
+
+            "partial_washes":
+                partial_washes,
+
+            "per_wash_rate":
+                round(
+                    per_wash_rate,
+                    2
+                ),
+
+            "invoice_amount":
+                invoice_amount,
+
+            "sales_invoice_grand_total":
+                invoice.grand_total,
+
+            "payment_entry_amount":
+                monthly_rate,
+
+            "allocated_amount":
+                allocated_amount,
+
+            "unallocated_amount":
+                expected_unallocated,
+
+            "remaining_amount":
+                remaining_amount,
+
+            "sales_invoice":
+                invoice.name,
+
+            "payment_entry":
+                payment_entry_name
+        }
+
+    except Exception:
+
+        frappe.db.rollback()
+
+        frappe.log_error(
+            frappe.get_traceback(),
+            "Partial Invoice and Payment Creation"
+        )
+
+        raise
