@@ -4893,6 +4893,10 @@ def create_partial_invoice_and_payment(customer_name):
         # ---------------------------------------------------------
 
         payment_entry.payment_type = "Receive"
+        
+        payment_entry.reference_no = "AUTO-REF"
+        
+        payment_entry.reference_date = frappe.utils.today()
 
         # ---------------------------------------------------------
         # PARTY
@@ -4986,7 +4990,7 @@ def create_partial_invoice_and_payment(customer_name):
         # SUBMIT PAYMENT ENTRY
         # ---------------------------------------------------------
 
-        payment_entry.submit()
+        payment_entry.save()
 
         payment_entry_name = (
             payment_entry.name
