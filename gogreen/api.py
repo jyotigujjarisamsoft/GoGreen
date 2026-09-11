@@ -4437,16 +4437,40 @@ def get_towers_by_greatgrandparent(greatgrandparent_name):
     return [tower.name for tower in towers]
     
 
+import frappe
+
+from frappe.utils import (
+    getdate,
+    add_days,
+    get_first_day,
+    get_last_day
+)
+
+
 @frappe.whitelist(allow_guest=True)
 def create_partial_invoice_and_payment(customer_name):
     """
     Create partial Sales Invoice and Payment Entry
     for a customer created from the 105 AED Customer Web Form.
 
-    Payment Entry:
-        - Paid amount = full monthly rate
-        - Allocated amount = newly created Sales Invoice amount
-        - Remaining amount = unallocated customer advance
+    MONTHLY RATE IS VAT INCLUSIVE.
+
+    Example:
+        Monthly Rate = 105 AED
+
+        If 4 washes out of 8 are applicable:
+
+        Partial Gross Amount = 52.50 AED
+
+        VAT included in 52.50:
+            Net Amount = 50.00
+            VAT        = 2.50
+            Grand Total = 52.50
+
+        Payment Entry:
+            Paid Amount = 105.00
+            Allocated   = 52.50
+            Unallocated = 52.50
 
     Fields:
         custom_rate
@@ -4478,7 +4502,7 @@ def create_partial_invoice_and_payment(customer_name):
         print("======================================")
 
         # ---------------------------------------------------------
-        # GET RATE
+        # GET MONTHLY RATE
         # ---------------------------------------------------------
 
         monthly_rate = float(
@@ -4490,8 +4514,13 @@ def create_partial_invoice_and_payment(customer_name):
                 "Customer Rate must be greater than 0"
             )
 
+        monthly_rate = round(
+            monthly_rate,
+            2
+        )
+
         print(
-            "Monthly Rate:",
+            "Monthly Rate INCLUDING VAT:",
             monthly_rate
         )
 
@@ -4522,6 +4551,16 @@ def create_partial_invoice_and_payment(customer_name):
         # ---------------------------------------------------------
 
         selected_days = []
+
+        # Python weekday:
+        #
+        # Monday    = 0
+        # Tuesday   = 1
+        # Wednesday = 2
+        # Thursday  = 3
+        # Friday    = 4
+        # Saturday  = 5
+        # Sunday    = 6
 
         if customer.get("custom_sun"):
             selected_days.append(6)
@@ -4565,10 +4604,11 @@ def create_partial_invoice_and_payment(customer_name):
         # 3+ days/week = 12 washes
         #
         # Maximum is always 12.
-        # Extra calendar occurrences are ignored.
         # ---------------------------------------------------------
 
-        days_per_week = len(selected_days)
+        days_per_week = len(
+            selected_days
+        )
 
         if days_per_week == 1:
 
@@ -4626,7 +4666,7 @@ def create_partial_invoice_and_payment(customer_name):
 
                 partial_washes += 1
 
-            current_date = frappe.utils.add_days(
+            current_date = add_days(
                 current_date,
                 1
             )
@@ -4658,7 +4698,17 @@ def create_partial_invoice_and_payment(customer_name):
             )
 
         # ---------------------------------------------------------
-        # CALCULATE PER WASH RATE
+        # CALCULATE GROSS PER WASH RATE
+        # ---------------------------------------------------------
+        #
+        # IMPORTANT:
+        #
+        # Monthly rate already INCLUDES 5% VAT.
+        #
+        # Example:
+        #
+        # 105 / 8 = 13.125 AED per wash INCLUDING VAT
+        #
         # ---------------------------------------------------------
 
         per_wash_rate = (
@@ -4666,13 +4716,33 @@ def create_partial_invoice_and_payment(customer_name):
             / standard_monthly_washes
         )
 
+        per_wash_rate = round(
+            per_wash_rate,
+            2
+        )
+
+        print(
+            "Per Wash Rate INCLUDING VAT:",
+            per_wash_rate
+        )
+
         # ---------------------------------------------------------
-        # CALCULATE PARTIAL INVOICE AMOUNT
+        # CALCULATE PARTIAL INVOICE GROSS AMOUNT
+        # ---------------------------------------------------------
+        #
+        # This amount is VAT inclusive.
+        #
+        # Example:
+        #
+        # 105 / 8 × 4
+        # = 52.50 AED INCLUDING VAT
+        #
         # ---------------------------------------------------------
 
         invoice_amount = (
-            per_wash_rate
+            monthly_rate
             * partial_washes
+            / standard_monthly_washes
         )
 
         invoice_amount = round(
@@ -4680,15 +4750,85 @@ def create_partial_invoice_and_payment(customer_name):
             2
         )
 
+        print(
+            "Partial Invoice Gross Amount INCLUDING VAT:",
+            invoice_amount
+        )
+
         # ---------------------------------------------------------
-        # CALCULATE REMAINING AMOUNT
+        # CALCULATE VAT-INCLUSIVE BREAKDOWN
         # ---------------------------------------------------------
         #
-        # This is only for information.
+        # Gross amount = Net + VAT
         #
-        # Payment Entry will be created for FULL monthly_rate.
-        # Invoice amount will be allocated.
-        # Difference will remain unallocated.
+        # For 5% VAT:
+        #
+        # Net = Gross / 1.05
+        # VAT = Gross - Net
+        #
+        # Example:
+        #
+        # Gross = 52.50
+        #
+        # Net = 52.50 / 1.05
+        #     = 50.00
+        #
+        # VAT = 52.50 - 50.00
+        #     = 2.50
+        #
+        # ---------------------------------------------------------
+
+        vat_rate = 5.0
+
+        net_amount = (
+            invoice_amount
+            / (1 + (vat_rate / 100))
+        )
+
+        net_amount = round(
+            net_amount,
+            2
+        )
+
+        vat_amount = (
+            invoice_amount
+            - net_amount
+        )
+
+        vat_amount = round(
+            vat_amount,
+            2
+        )
+
+        print(
+            "Net Amount:",
+            net_amount
+        )
+
+        print(
+            "VAT Amount:",
+            vat_amount
+        )
+
+        print(
+            "Gross / Grand Total:",
+            invoice_amount
+        )
+
+        # ---------------------------------------------------------
+        # CALCULATE REMAINING / UNALLOCATED AMOUNT
+        # ---------------------------------------------------------
+        #
+        # Monthly payment = full VAT-inclusive monthly rate
+        #
+        # Partial invoice = VAT-inclusive partial amount
+        #
+        # Difference remains unallocated.
+        #
+        # Example:
+        #
+        # 105.00 - 52.50 = 52.50
+        #
         # ---------------------------------------------------------
 
         remaining_amount = (
@@ -4699,16 +4839,6 @@ def create_partial_invoice_and_payment(customer_name):
         remaining_amount = round(
             remaining_amount,
             2
-        )
-
-        print(
-            "Per Wash Rate:",
-            per_wash_rate
-        )
-
-        print(
-            "Invoice Amount:",
-            invoice_amount
         )
 
         print(
@@ -4798,7 +4928,7 @@ def create_partial_invoice_and_payment(customer_name):
         invoice.due_date = partial_start_date
 
         # ---------------------------------------------------------
-        # CUSTOM FIELDS
+        # CUSTOM PARTIAL START DATE
         # ---------------------------------------------------------
 
         if invoice.meta.has_field(
@@ -4812,48 +4942,100 @@ def create_partial_invoice_and_payment(customer_name):
         # ---------------------------------------------------------
         # ADD ITEM
         # ---------------------------------------------------------
+        #
+        # IMPORTANT:
+        #
+        # "rate" is the GROSS / VAT-INCLUSIVE amount.
+        #
+        # We will mark the tax as included below.
+        #
+        # Example:
+        #
+        # Item rate = 52.50
+        # VAT       = included
+        # Grand     = 52.50
+        #
+        # ---------------------------------------------------------
 
         invoice.append(
             "items",
             {
                 "item_code": "Go Green service",
+
                 "qty": 1,
+
                 "rate": invoice_amount,
 
-                # Use calculated income account
                 "income_account": income_account
             }
         )
 
         # ---------------------------------------------------------
-        # TAX TEMPLATE
+        # VAT 5% INCLUDED IN ITEM RATE
         # ---------------------------------------------------------
         #
-        # Use your existing VAT 5% template.
+        # DO NOT set:
+        #
+        # invoice.taxes_and_charges
+        #
+        # because we are manually creating the tax row.
+        #
+        # The important setting is:
+        #
+        # included_in_print_rate = 1
+        #
+        # This tells ERPNext that the item rate already
+        # contains VAT.
+        #
         # ---------------------------------------------------------
 
-        if frappe.db.exists(
-            "Sales Taxes and Charges Template",
-            "VAT 5% - GG"
-        ):
+        invoice.append(
+            "taxes",
+            {
+                "charge_type": "On Net Total",
 
-            invoice.taxes_and_charges = (
-                "VAT 5% - GG"
-            )
+                "account_head": "VAT 5% - GG",
+
+                "description": "VAT 5% Included",
+
+                "rate": vat_rate,
+
+                "included_in_print_rate": 1
+            }
+        )
 
         # ---------------------------------------------------------
-        # SAVE AND SUBMIT INVOICE
+        # CREATE / SAVE INVOICE
         # ---------------------------------------------------------
 
         invoice.insert(
             ignore_permissions=True
         )
 
+        print(
+            "Sales Invoice Inserted:",
+            invoice.name
+        )
+
+        # ---------------------------------------------------------
+        # SUBMIT INVOICE
+        # ---------------------------------------------------------
+
         invoice.submit()
 
         print(
-            "Sales Invoice Created:",
+            "Sales Invoice Submitted:",
             invoice.name
+        )
+
+        print(
+            "Sales Invoice Net Total:",
+            invoice.net_total
+        )
+
+        print(
+            "Sales Invoice Total Taxes:",
+            invoice.total_taxes_and_charges
         )
 
         print(
@@ -4872,13 +5054,14 @@ def create_partial_invoice_and_payment(customer_name):
         #
         # Example:
         #
-        # Monthly Rate       = 105
-        # Invoice Grand Total = 52.50
+        # Monthly Rate         = 105.00
+        # Invoice Grand Total  = 52.50
         #
         # Payment Entry:
-        # Paid Amount        = 105
-        # Allocated          = 52.50
-        # Unallocated        = 52.50
+        #
+        # Paid Amount          = 105.00
+        # Allocated            = 52.50
+        # Unallocated          = 52.50
         #
         # ---------------------------------------------------------
 
@@ -4893,10 +5076,6 @@ def create_partial_invoice_and_payment(customer_name):
         # ---------------------------------------------------------
 
         payment_entry.payment_type = "Receive"
-        
-        payment_entry.reference_no = "AUTO-REF"
-        
-        payment_entry.reference_date = frappe.utils.today()
 
         # ---------------------------------------------------------
         # PARTY
@@ -4915,16 +5094,16 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # FULL PAYMENT AMOUNT
-        # ---------------------------------------------------------
-        #
-        # IMPORTANT:
-        # Create Payment Entry for the FULL monthly rate.
+        # FULL MONTHLY PAYMENT
         # ---------------------------------------------------------
 
-        payment_entry.paid_amount = monthly_rate
+        payment_entry.paid_amount = (
+            monthly_rate
+        )
 
-        payment_entry.received_amount = monthly_rate
+        payment_entry.received_amount = (
+            monthly_rate
+        )
 
         print(
             "Payment Entry Full Amount:",
@@ -4940,7 +5119,14 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # ALLOCATE PAYMENT TO NEW SALES INVOICE
+        # ALLOCATE PAYMENT TO SALES INVOICE
+        # ---------------------------------------------------------
+        #
+        # IMPORTANT:
+        #
+        # Allocate against GRAND TOTAL because the invoice
+        # contains VAT.
+        #
         # ---------------------------------------------------------
 
         allocated_amount = min(
@@ -4948,10 +5134,47 @@ def create_partial_invoice_and_payment(customer_name):
             invoice.outstanding_amount
         )
 
+        allocated_amount = round(
+            allocated_amount,
+            2
+        )
+
         print(
             "Amount To Allocate:",
             allocated_amount
         )
+
+        # ---------------------------------------------------------
+        # PAYMENT REFERENCE
+        # ---------------------------------------------------------
+        #
+        # Bank transactions may require Reference No / Date
+        # depending on your ERPNext configuration.
+        #
+        # If these fields are mandatory in your Payment Entry,
+        # set them here.
+        #
+        # ---------------------------------------------------------
+
+        if payment_entry.meta.has_field(
+            "reference_no"
+        ):
+
+            payment_entry.reference_no = (
+                f"PARTIAL-{invoice.name}"
+            )
+
+        if payment_entry.meta.has_field(
+            "reference_date"
+        ):
+
+            payment_entry.reference_date = (
+                partial_start_date
+            )
+
+        # ---------------------------------------------------------
+        # ADD SALES INVOICE REFERENCE
+        # ---------------------------------------------------------
 
         payment_entry.append(
             "references",
@@ -4990,7 +5213,7 @@ def create_partial_invoice_and_payment(customer_name):
         # SUBMIT PAYMENT ENTRY
         # ---------------------------------------------------------
 
-        payment_entry.save()
+        payment_entry.submit()
 
         payment_entry_name = (
             payment_entry.name
@@ -5002,12 +5225,16 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # CALCULATE EXPECTED UNALLOCATED
+        # CALCULATE ACTUAL UNALLOCATED AMOUNT
         # ---------------------------------------------------------
 
-        expected_unallocated = round(
+        expected_unallocated = (
             monthly_rate
-            - allocated_amount,
+            - allocated_amount
+        )
+
+        expected_unallocated = round(
+            expected_unallocated,
             2
         )
 
@@ -5021,6 +5248,10 @@ def create_partial_invoice_and_payment(customer_name):
         # ---------------------------------------------------------
 
         frappe.db.commit()
+
+        # ---------------------------------------------------------
+        # FINAL LOG
+        # ---------------------------------------------------------
 
         print(
             "======================================"
@@ -5036,13 +5267,43 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         print(
-            "Sales Invoice:",
-            invoice.name
+            "Monthly Rate INCLUDING VAT:",
+            monthly_rate
         )
 
         print(
-            "Payment Entry:",
-            payment_entry.name
+            "Selected Days Per Week:",
+            days_per_week
+        )
+
+        print(
+            "Standard Monthly Washes:",
+            standard_monthly_washes
+        )
+
+        print(
+            "Partial Washes:",
+            partial_washes
+        )
+
+        print(
+            "Per Wash INCLUDING VAT:",
+            per_wash_rate
+        )
+
+        print(
+            "Invoice Net Amount:",
+            invoice.net_total
+        )
+
+        print(
+            "Invoice VAT:",
+            invoice.total_taxes_and_charges
+        )
+
+        print(
+            "Invoice Grand Total:",
+            invoice.grand_total
         )
 
         print(
@@ -5058,6 +5319,16 @@ def create_partial_invoice_and_payment(customer_name):
         print(
             "Unallocated Amount:",
             expected_unallocated
+        )
+
+        print(
+            "Sales Invoice:",
+            invoice.name
+        )
+
+        print(
+            "Payment Entry:",
+            payment_entry.name
         )
 
         print(
@@ -5078,6 +5349,12 @@ def create_partial_invoice_and_payment(customer_name):
             "monthly_rate":
                 monthly_rate,
 
+            "vat_inclusive":
+                True,
+
+            "vat_rate":
+                vat_rate,
+
             "selected_days_per_week":
                 days_per_week,
 
@@ -5088,13 +5365,16 @@ def create_partial_invoice_and_payment(customer_name):
                 partial_washes,
 
             "per_wash_rate":
-                round(
-                    per_wash_rate,
-                    2
-                ),
+                per_wash_rate,
 
-            "invoice_amount":
+            "invoice_gross_amount":
                 invoice_amount,
+
+            "invoice_net_amount":
+                invoice.net_total,
+
+            "invoice_vat_amount":
+                invoice.total_taxes_and_charges,
 
             "sales_invoice_grand_total":
                 invoice.grand_total,
