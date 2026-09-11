@@ -4957,6 +4957,8 @@ def create_partial_invoice_and_payment(customer_name):
         # SUBMIT SALES INVOICE
         # ---------------------------------------------------------
 
+        #invoice.submit()
+        invoice.flags.ignore_permissions = True
         invoice.submit()
 
         print(
@@ -5152,7 +5154,9 @@ def create_partial_invoice_and_payment(customer_name):
         # SUBMIT PAYMENT ENTRY
         # ---------------------------------------------------------
 
-        payment_entry.submit()
+        
+        payment_entry.flags.ignore_permissions = True
+        payment_entry.save()
 
         payment_entry_name = (
             payment_entry.name
