@@ -4437,13 +4437,11 @@ def get_towers_by_greatgrandparent(greatgrandparent_name):
     return [tower.name for tower in towers]
     
 
+```python
 import frappe
 
 from frappe.utils import (
-    getdate,
-    add_days,
-    get_first_day,
-    get_last_day
+    getdate
 )
 
 
@@ -4455,32 +4453,61 @@ def create_partial_invoice_and_payment(customer_name):
 
     MONTHLY RATE IS VAT INCLUSIVE.
 
+    PARTIAL BILLING LOGIC:
+
+        Start Date 1-9:
+            Full monthly rate
+
+        Start Date 10-20:
+            Monthly rate / 2
+
+        Start Date 21-25:
+            Monthly rate / 3
+
+        Start Date 26-31:
+            Not allowed until billing rule is defined.
+
     Example:
+
         Monthly Rate = 105 AED
 
-        If 4 washes out of 8 are applicable:
+        Date 1-9:
+            Invoice Gross = 105.00
 
-        Partial Gross Amount = 52.50 AED
+        Date 10-20:
+            Invoice Gross = 52.50
 
-        VAT included in 52.50:
-            Net Amount = 50.00
-            VAT        = 2.50
-            Grand Total = 52.50
+        Date 21-25:
+            Invoice Gross = 35.00
 
-        Payment Entry:
-            Paid Amount = 105.00
-            Allocated   = 52.50
-            Unallocated = 52.50
+    Since the monthly rate is VAT inclusive:
+
+        105.00:
+            Net = 100.00
+            VAT = 5.00
+
+        52.50:
+            Net = 50.00
+            VAT = 2.50
+
+        35.00:
+            Net = 33.33
+            VAT = 1.67
+
+    Payment Entry:
+
+        Paid Amount = Full Monthly Rate
+
+        Allocated Amount = Invoice Grand Total
+
+        Unallocated Amount =
+            Monthly Rate - Invoice Grand Total
 
     Fields:
+
         custom_rate
         custom_partial_start_date
-        custom_sun
-        custom_mon
-        custom_tues
-        custom_wed
-        custom_thur
-        custom_fri
+        custom_greatgrandparent_name
     """
 
     try:
@@ -4490,16 +4517,27 @@ def create_partial_invoice_and_payment(customer_name):
         # ---------------------------------------------------------
 
         if not customer_name:
-            frappe.throw("Customer name is required")
+            frappe.throw(
+                "Customer name is required"
+            )
 
         customer = frappe.get_doc(
             "Customer",
             customer_name
         )
 
-        print("======================================")
-        print("CUSTOMER:", customer.name)
-        print("======================================")
+        print(
+            "======================================"
+        )
+
+        print(
+            "CUSTOMER:",
+            customer.name
+        )
+
+        print(
+            "======================================"
+        )
 
         # ---------------------------------------------------------
         # GET MONTHLY RATE
@@ -4510,6 +4548,7 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         if monthly_rate <= 0:
+
             frappe.throw(
                 "Customer Rate must be greater than 0"
             )
@@ -4533,6 +4572,7 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         if not partial_start_date:
+
             frappe.throw(
                 "Partial Start Date is required"
             )
@@ -4547,207 +4587,89 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # GET SELECTED WEEKDAYS
+        # GET DAY OF MONTH
+        # ---------------------------------------------------------
+        #
+        # Example:
+        #
+        # 2026-09-05 -> 5
+        # 2026-09-11 -> 11
+        # 2026-09-21 -> 21
+        #
         # ---------------------------------------------------------
 
-        selected_days = []
-
-        # Python weekday:
-        #
-        # Monday    = 0
-        # Tuesday   = 1
-        # Wednesday = 2
-        # Thursday  = 3
-        # Friday    = 4
-        # Saturday  = 5
-        # Sunday    = 6
-
-        if customer.get("custom_sun"):
-            selected_days.append(6)
-
-        if customer.get("custom_mon"):
-            selected_days.append(0)
-
-        if customer.get("custom_tues"):
-            selected_days.append(1)
-
-        if customer.get("custom_wed"):
-            selected_days.append(2)
-
-        if customer.get("custom_thur"):
-            selected_days.append(3)
-
-        if customer.get("custom_fri"):
-            selected_days.append(4)
+        start_day = partial_start_date.day
 
         print(
-            "Selected Weekday Numbers:",
-            selected_days
+            "Partial Start Day:",
+            start_day
         )
 
-        if not selected_days:
-            frappe.throw(
-                "Please select at least one washing day"
+        # ---------------------------------------------------------
+        # CALCULATE PARTIAL INVOICE AMOUNT
+        # ---------------------------------------------------------
+        #
+        # NEW BUSINESS LOGIC:
+        #
+        # 1-9   = Full Monthly Rate
+        # 10-20 = Monthly Rate / 2
+        # 21-25 = Monthly Rate / 3
+        #
+        # ---------------------------------------------------------
+
+        if 1 <= start_day <= 9:
+
+            billing_divisor = 1
+
+            billing_period = "Full"
+
+            invoice_amount = monthly_rate
+
+        elif 10 <= start_day <= 20:
+
+            billing_divisor = 2
+
+            billing_period = "Half"
+
+            invoice_amount = (
+                monthly_rate / 2
             )
 
-        print(
-            "Number of Selected Days Per Week:",
-            len(selected_days)
-        )
+        elif 21 <= start_day <= 25:
 
-        # ---------------------------------------------------------
-        # STANDARD MONTHLY WASHES
-        # ---------------------------------------------------------
-        #
-        # 1 day/week = 4 washes
-        # 2 days/week = 8 washes
-        # 3+ days/week = 12 washes
-        #
-        # Maximum is always 12.
-        # ---------------------------------------------------------
+            billing_divisor = 3
 
-        days_per_week = len(
-            selected_days
-        )
+            billing_period = "One Third"
 
-        if days_per_week == 1:
-
-            standard_monthly_washes = 4
-
-        elif days_per_week == 2:
-
-            standard_monthly_washes = 8
+            invoice_amount = (
+                monthly_rate / 3
+            )
 
         else:
 
-            standard_monthly_washes = 12
-
-        print(
-            "Standard Monthly Washes:",
-            standard_monthly_washes
-        )
-
-        # ---------------------------------------------------------
-        # MONTH START / MONTH END
-        # ---------------------------------------------------------
-
-        month_start = get_first_day(
-            partial_start_date
-        )
-
-        month_end = get_last_day(
-            partial_start_date
-        )
-
-        print(
-            "Month Start:",
-            month_start
-        )
-
-        print(
-            "Month End:",
-            month_end
-        )
-
-        # ---------------------------------------------------------
-        # COUNT SELECTED DAYS FROM PARTIAL START DATE
-        # TO MONTH END
-        # ---------------------------------------------------------
-
-        partial_washes = 0
-
-        current_date = partial_start_date
-
-        while current_date <= month_end:
-
-            weekday_number = current_date.weekday()
-
-            if weekday_number in selected_days:
-
-                partial_washes += 1
-
-            current_date = add_days(
-                current_date,
-                1
-            )
-
-        print(
-            "Actual Partial Wash Occurrences:",
-            partial_washes
-        )
-
-        # ---------------------------------------------------------
-        # NEVER ALLOW MORE THAN STANDARD MONTHLY WASHES
-        # ---------------------------------------------------------
-
-        partial_washes = min(
-            partial_washes,
-            standard_monthly_washes
-        )
-
-        print(
-            "Final Partial Washes:",
-            partial_washes
-        )
-
-        if partial_washes <= 0:
-
             frappe.throw(
-                "No selected washing days are available "
-                "from the partial start date until month end"
+                "Partial Start Date from 26th to 31st "
+                "is not currently supported. "
+                "Please define the billing rule for these dates."
             )
 
         # ---------------------------------------------------------
-        # CALCULATE GROSS PER WASH RATE
+        # ROUND GROSS INVOICE AMOUNT
         # ---------------------------------------------------------
-        #
-        # IMPORTANT:
-        #
-        # Monthly rate already INCLUDES 5% VAT.
-        #
-        # Example:
-        #
-        # 105 / 8 = 13.125 AED per wash INCLUDING VAT
-        #
-        # ---------------------------------------------------------
-
-        per_wash_rate = (
-            monthly_rate
-            / standard_monthly_washes
-        )
-
-        per_wash_rate = round(
-            per_wash_rate,
-            2
-        )
-
-        print(
-            "Per Wash Rate INCLUDING VAT:",
-            per_wash_rate
-        )
-
-        # ---------------------------------------------------------
-        # CALCULATE PARTIAL INVOICE GROSS AMOUNT
-        # ---------------------------------------------------------
-        #
-        # This amount is VAT inclusive.
-        #
-        # Example:
-        #
-        # 105 / 8 × 4
-        # = 52.50 AED INCLUDING VAT
-        #
-        # ---------------------------------------------------------
-
-        invoice_amount = (
-            monthly_rate
-            * partial_washes
-            / standard_monthly_washes
-        )
 
         invoice_amount = round(
             invoice_amount,
             2
+        )
+
+        print(
+            "Billing Period:",
+            billing_period
+        )
+
+        print(
+            "Billing Divisor:",
+            billing_divisor
         )
 
         print(
@@ -4759,22 +4681,13 @@ def create_partial_invoice_and_payment(customer_name):
         # CALCULATE VAT-INCLUSIVE BREAKDOWN
         # ---------------------------------------------------------
         #
-        # Gross amount = Net + VAT
+        # Gross = Net + VAT
         #
-        # For 5% VAT:
+        # VAT = 5%
         #
         # Net = Gross / 1.05
+        #
         # VAT = Gross - Net
-        #
-        # Example:
-        #
-        # Gross = 52.50
-        #
-        # Net = 52.50 / 1.05
-        #     = 50.00
-        #
-        # VAT = 52.50 - 50.00
-        #     = 2.50
         #
         # ---------------------------------------------------------
 
@@ -4782,7 +4695,9 @@ def create_partial_invoice_and_payment(customer_name):
 
         net_amount = (
             invoice_amount
-            / (1 + (vat_rate / 100))
+            / (
+                1 + (vat_rate / 100)
+            )
         )
 
         net_amount = round(
@@ -4811,7 +4726,7 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         print(
-            "Gross / Grand Total:",
+            "Gross Amount:",
             invoice_amount
         )
 
@@ -4819,15 +4734,19 @@ def create_partial_invoice_and_payment(customer_name):
         # CALCULATE REMAINING / UNALLOCATED AMOUNT
         # ---------------------------------------------------------
         #
-        # Monthly payment = full VAT-inclusive monthly rate
+        # Full monthly payment is received.
         #
-        # Partial invoice = VAT-inclusive partial amount
-        #
-        # Difference remains unallocated.
+        # Only the partial invoice amount is allocated.
         #
         # Example:
         #
-        # 105.00 - 52.50 = 52.50
+        # Monthly Rate = 105
+        #
+        # Date 10-20:
+        # Invoice = 52.50
+        #
+        # Remaining = 105 - 52.50
+        #           = 52.50
         #
         # ---------------------------------------------------------
 
@@ -4855,7 +4774,8 @@ def create_partial_invoice_and_payment(customer_name):
             {
                 "customer": customer.name,
                 "posting_date": partial_start_date,
-                "custom_partial_start_date": partial_start_date
+                "custom_partial_start_date":
+                    partial_start_date
             }
         )
 
@@ -4921,11 +4841,17 @@ def create_partial_invoice_and_payment(customer_name):
 
         invoice.customer = customer.name
 
-        # IMPORTANT:
-        # Posting date = partial start date
-        invoice.posting_date = partial_start_date
+        # ---------------------------------------------------------
+        # POSTING DATE
+        # ---------------------------------------------------------
 
-        invoice.due_date = partial_start_date
+        invoice.posting_date = (
+            partial_start_date
+        )
+
+        invoice.due_date = (
+            partial_start_date
+        )
 
         # ---------------------------------------------------------
         # CUSTOM PARTIAL START DATE
@@ -4945,28 +4871,35 @@ def create_partial_invoice_and_payment(customer_name):
         #
         # IMPORTANT:
         #
-        # "rate" is the GROSS / VAT-INCLUSIVE amount.
-        #
-        # We will mark the tax as included below.
+        # The item rate is GROSS / VAT INCLUSIVE.
         #
         # Example:
         #
-        # Item rate = 52.50
-        # VAT       = included
-        # Grand     = 52.50
+        # Date 1-9:
+        # Rate = 105
+        #
+        # Date 10-20:
+        # Rate = 52.50
+        #
+        # Date 21-25:
+        # Rate = 35
         #
         # ---------------------------------------------------------
 
         invoice.append(
             "items",
             {
-                "item_code": "Go Green service",
+                "item_code":
+                    "Go Green service",
 
-                "qty": 1,
+                "qty":
+                    1,
 
-                "rate": invoice_amount,
+                "rate":
+                    invoice_amount,
 
-                "income_account": income_account
+                "income_account":
+                    income_account
             }
         )
 
@@ -4974,38 +4907,41 @@ def create_partial_invoice_and_payment(customer_name):
         # VAT 5% INCLUDED IN ITEM RATE
         # ---------------------------------------------------------
         #
-        # DO NOT set:
+        # Do NOT set:
         #
         # invoice.taxes_and_charges
         #
-        # because we are manually creating the tax row.
-        #
-        # The important setting is:
+        # because we are manually adding the tax row.
         #
         # included_in_print_rate = 1
         #
-        # This tells ERPNext that the item rate already
-        # contains VAT.
+        # means the VAT is already included
+        # inside the item rate.
         #
         # ---------------------------------------------------------
 
         invoice.append(
             "taxes",
             {
-                "charge_type": "On Net Total",
+                "charge_type":
+                    "On Net Total",
 
-                "account_head": "VAT 5% - GG",
+                "account_head":
+                    "VAT 5% - GG",
 
-                "description": "VAT 5% Included",
+                "description":
+                    "VAT 5% Included",
 
-                "rate": vat_rate,
+                "rate":
+                    vat_rate,
 
-                "included_in_print_rate": 1
+                "included_in_print_rate":
+                    1
             }
         )
 
         # ---------------------------------------------------------
-        # CREATE / SAVE INVOICE
+        # INSERT SALES INVOICE
         # ---------------------------------------------------------
 
         invoice.insert(
@@ -5018,7 +4954,7 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # SUBMIT INVOICE
+        # SUBMIT SALES INVOICE
         # ---------------------------------------------------------
 
         invoice.submit()
@@ -5049,19 +4985,21 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # CREATE PAYMENT ENTRY FOR FULL MONTHLY RATE
+        # CREATE PAYMENT ENTRY
         # ---------------------------------------------------------
+        #
+        # Payment Entry is always for FULL monthly rate.
         #
         # Example:
         #
-        # Monthly Rate         = 105.00
-        # Invoice Grand Total  = 52.50
+        # Monthly Rate = 105
+        # Invoice = 52.50
         #
         # Payment Entry:
         #
-        # Paid Amount          = 105.00
-        # Allocated            = 52.50
-        # Unallocated          = 52.50
+        # Paid Amount = 105
+        # Allocated = 52.50
+        # Unallocated = 52.50
         #
         # ---------------------------------------------------------
 
@@ -5075,15 +5013,21 @@ def create_partial_invoice_and_payment(customer_name):
         # PAYMENT TYPE
         # ---------------------------------------------------------
 
-        payment_entry.payment_type = "Receive"
+        payment_entry.payment_type = (
+            "Receive"
+        )
 
         # ---------------------------------------------------------
         # PARTY
         # ---------------------------------------------------------
 
-        payment_entry.party_type = "Customer"
+        payment_entry.party_type = (
+            "Customer"
+        )
 
-        payment_entry.party = customer.name
+        payment_entry.party = (
+            customer.name
+        )
 
         # ---------------------------------------------------------
         # POSTING DATE
@@ -5122,10 +5066,9 @@ def create_partial_invoice_and_payment(customer_name):
         # ALLOCATE PAYMENT TO SALES INVOICE
         # ---------------------------------------------------------
         #
-        # IMPORTANT:
+        # Allocate against GRAND TOTAL.
         #
-        # Allocate against GRAND TOTAL because the invoice
-        # contains VAT.
+        # This includes VAT.
         #
         # ---------------------------------------------------------
 
@@ -5148,11 +5091,7 @@ def create_partial_invoice_and_payment(customer_name):
         # PAYMENT REFERENCE
         # ---------------------------------------------------------
         #
-        # Bank transactions may require Reference No / Date
-        # depending on your ERPNext configuration.
-        #
-        # If these fields are mandatory in your Payment Entry,
-        # set them here.
+        # Required in some Bank configurations.
         #
         # ---------------------------------------------------------
 
@@ -5267,28 +5206,28 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         print(
+            "Partial Start Date:",
+            partial_start_date
+        )
+
+        print(
+            "Partial Start Day:",
+            start_day
+        )
+
+        print(
+            "Billing Period:",
+            billing_period
+        )
+
+        print(
+            "Billing Divisor:",
+            billing_divisor
+        )
+
+        print(
             "Monthly Rate INCLUDING VAT:",
             monthly_rate
-        )
-
-        print(
-            "Selected Days Per Week:",
-            days_per_week
-        )
-
-        print(
-            "Standard Monthly Washes:",
-            standard_monthly_washes
-        )
-
-        print(
-            "Partial Washes:",
-            partial_washes
-        )
-
-        print(
-            "Per Wash INCLUDING VAT:",
-            per_wash_rate
         )
 
         print(
@@ -5341,10 +5280,23 @@ def create_partial_invoice_and_payment(customer_name):
 
         return {
 
-            "success": True,
+            "success":
+                True,
 
             "customer":
                 customer.name,
+
+            "partial_start_date":
+                str(partial_start_date),
+
+            "partial_start_day":
+                start_day,
+
+            "billing_period":
+                billing_period,
+
+            "billing_divisor":
+                billing_divisor,
 
             "monthly_rate":
                 monthly_rate,
@@ -5354,18 +5306,6 @@ def create_partial_invoice_and_payment(customer_name):
 
             "vat_rate":
                 vat_rate,
-
-            "selected_days_per_week":
-                days_per_week,
-
-            "standard_monthly_washes":
-                standard_monthly_washes,
-
-            "partial_washes":
-                partial_washes,
-
-            "per_wash_rate":
-                per_wash_rate,
 
             "invoice_gross_amount":
                 invoice_amount,
@@ -5408,3 +5348,5 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         raise
+```
+
