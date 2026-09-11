@@ -5010,7 +5010,7 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # PAYMENT TYPE
+        # PAYMENT TYPEe
         # ---------------------------------------------------------
 
         payment_entry.payment_type = (
