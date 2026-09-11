@@ -4437,7 +4437,7 @@ def get_towers_by_greatgrandparent(greatgrandparent_name):
     return [tower.name for tower in towers]
     
 
-```python
+
 import frappe
 
 from frappe.utils import (
@@ -5348,5 +5348,5 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         raise
-```
+
 
