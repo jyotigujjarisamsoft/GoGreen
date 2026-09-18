@@ -4444,73 +4444,39 @@ from frappe.utils import (
     getdate
 )
 
-
 @frappe.whitelist(allow_guest=True)
 def create_partial_invoice_and_payment(customer_name):
     """
     Create partial Sales Invoice and Payment Entry
     for a customer created from the 105 AED Customer Web Form.
 
-    MONTHLY RATE IS VAT INCLUSIVE.
-
-    PARTIAL BILLING LOGIC:
-
-        Start Date 1-9:
-            Full monthly rate
-
-        Start Date 10-20:
-            Monthly rate / 2
-
-        Start Date 21-25:
-            Monthly rate / 3
-
-        Start Date 26-31:
-            Not allowed until billing rule is defined.
-
-    Example:
-
-        Monthly Rate = 105 AED
-
-        Date 1-9:
-            Invoice Gross = 105.00
-
-        Date 10-20:
-            Invoice Gross = 52.50
-
-        Date 21-25:
-            Invoice Gross = 35.00
-
-    Since the monthly rate is VAT inclusive:
-
-        105.00:
-            Net = 100.00
-            VAT = 5.00
-
-        52.50:
-            Net = 50.00
-            VAT = 2.50
-
-        35.00:
-            Net = 33.33
-            VAT = 1.67
-
-    Payment Entry:
-
-        Paid Amount = Full Monthly Rate
-
-        Allocated Amount = Invoice Grand Total
-
-        Unallocated Amount =
-            Monthly Rate - Invoice Grand Total
-
-    Fields:
-
-        custom_rate
-        custom_partial_start_date
-        custom_greatgrandparent_name
+    Guest user -> temporarily switch to Administrator
+    so Sales Invoice and Payment Entry can be created/submitted.
     """
 
+    # ---------------------------------------------------------
+    # SAVE CURRENT USER
+    # ---------------------------------------------------------
+
+    original_user = frappe.session.user
+
     try:
+
+        # ---------------------------------------------------------
+        # SWITCH TO ADMINISTRATOR
+        # ---------------------------------------------------------
+
+        frappe.set_user("Administrator")
+
+        print(
+            "Original User:",
+            original_user
+        )
+
+        print(
+            "Current User:",
+            frappe.session.user
+        )
 
         # ---------------------------------------------------------
         # GET CUSTOMER
@@ -4526,19 +4492,6 @@ def create_partial_invoice_and_payment(customer_name):
             customer_name
         )
 
-        print(
-            "======================================"
-        )
-
-        print(
-            "CUSTOMER:",
-            customer.name
-        )
-
-        print(
-            "======================================"
-        )
-
         # ---------------------------------------------------------
         # GET MONTHLY RATE
         # ---------------------------------------------------------
@@ -4548,7 +4501,6 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         if monthly_rate <= 0:
-
             frappe.throw(
                 "Customer Rate must be greater than 0"
             )
@@ -4556,11 +4508,6 @@ def create_partial_invoice_and_payment(customer_name):
         monthly_rate = round(
             monthly_rate,
             2
-        )
-
-        print(
-            "Monthly Rate INCLUDING VAT:",
-            monthly_rate
         )
 
         # ---------------------------------------------------------
@@ -4572,7 +4519,6 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         if not partial_start_date:
-
             frappe.throw(
                 "Partial Start Date is required"
             )
@@ -4581,222 +4527,52 @@ def create_partial_invoice_and_payment(customer_name):
             partial_start_date
         )
 
-        print(
-            "Partial Start Date:",
-            partial_start_date
-        )
-
         # ---------------------------------------------------------
-        # GET DAY OF MONTH
-        # ---------------------------------------------------------
-        #
-        # Example:
-        #
-        # 2026-09-05 -> 5
-        # 2026-09-11 -> 11
-        # 2026-09-21 -> 21
-        #
+        # GET START DAY
         # ---------------------------------------------------------
 
         start_day = partial_start_date.day
 
-        print(
-            "Partial Start Day:",
-            start_day
-        )
-
         # ---------------------------------------------------------
-        # CALCULATE PARTIAL INVOICE AMOUNT
-        # ---------------------------------------------------------
-        #
-        # NEW BUSINESS LOGIC:
-        #
-        # 1-9   = Full Monthly Rate
-        # 10-20 = Monthly Rate / 2
-        # 21-25 = Monthly Rate / 3
-        #
+        # CALCULATE PARTIAL INVOICE
         # ---------------------------------------------------------
 
         if 1 <= start_day <= 9:
 
             billing_divisor = 1
-
             billing_period = "Full"
-
             invoice_amount = monthly_rate
 
         elif 10 <= start_day <= 20:
 
             billing_divisor = 2
-
             billing_period = "Half"
-
-            invoice_amount = (
-                monthly_rate / 2
-            )
+            invoice_amount = monthly_rate / 2
 
         elif 21 <= start_day <= 25:
 
             billing_divisor = 3
-
             billing_period = "One Third"
-
-            invoice_amount = (
-                monthly_rate / 3
-            )
+            invoice_amount = monthly_rate / 3
 
         else:
 
             frappe.throw(
                 "Partial Start Date from 26th to 31st "
-                "is not currently supported. "
-                "Please define the billing rule for these dates."
+                "is not currently supported."
             )
-
-        # ---------------------------------------------------------
-        # ROUND GROSS INVOICE AMOUNT
-        # ---------------------------------------------------------
 
         invoice_amount = round(
             invoice_amount,
             2
         )
 
-        print(
-            "Billing Period:",
-            billing_period
-        )
-
-        print(
-            "Billing Divisor:",
-            billing_divisor
-        )
-
-        print(
-            "Partial Invoice Gross Amount INCLUDING VAT:",
-            invoice_amount
-        )
-
         # ---------------------------------------------------------
-        # CALCULATE VAT-INCLUSIVE BREAKDOWN
-        # ---------------------------------------------------------
-        #
-        # Gross = Net + VAT
-        #
-        # VAT = 5%
-        #
-        # Net = Gross / 1.05
-        #
-        # VAT = Gross - Net
-        #
-        # ---------------------------------------------------------
-
-        vat_rate = 5.0
-
-        net_amount = (
-            invoice_amount
-            / (
-                1 + (vat_rate / 100)
-            )
-        )
-
-        net_amount = round(
-            net_amount,
-            2
-        )
-
-        vat_amount = (
-            invoice_amount
-            - net_amount
-        )
-
-        vat_amount = round(
-            vat_amount,
-            2
-        )
-
-        print(
-            "Net Amount:",
-            net_amount
-        )
-
-        print(
-            "VAT Amount:",
-            vat_amount
-        )
-
-        print(
-            "Gross Amount:",
-            invoice_amount
-        )
-
-        # ---------------------------------------------------------
-        # CALCULATE REMAINING / UNALLOCATED AMOUNT
-        # ---------------------------------------------------------
-        #
-        # Full monthly payment is received.
-        #
-        # Only the partial invoice amount is allocated.
-        #
-        # Example:
-        #
-        # Monthly Rate = 105
-        #
-        # Date 10-20:
-        # Invoice = 52.50
-        #
-        # Remaining = 105 - 52.50
-        #           = 52.50
-        #
-        # ---------------------------------------------------------
-
-        remaining_amount = (
-            monthly_rate
-            - invoice_amount
-        )
-
-        remaining_amount = round(
-            remaining_amount,
-            2
-        )
-
-        print(
-            "Remaining / Unallocated Amount:",
-            remaining_amount
-        )
-
-        # ---------------------------------------------------------
-        # PREVENT DUPLICATE INVOICE
-        # ---------------------------------------------------------
-
-        existing_invoice = frappe.db.exists(
-            "Sales Invoice",
-            {
-                "customer": customer.name,
-                "posting_date": partial_start_date,
-                "custom_partial_start_date":
-                    partial_start_date
-            }
-        )
-
-        if existing_invoice:
-
-            frappe.throw(
-                f"Sales Invoice {existing_invoice} already exists "
-                f"for this customer and start date."
-            )
-
-        # ---------------------------------------------------------
-        # GET CUSTOMER GREAT GRANDPARENT
+        # GET GREAT GRANDPARENT
         # ---------------------------------------------------------
 
         greatgrandparent_name = customer.get(
             "custom_greatgrandparent_name"
-        )
-
-        print(
-            "Great Grandparent:",
-            greatgrandparent_name
         )
 
         # ---------------------------------------------------------
@@ -4826,10 +4602,26 @@ def create_partial_invoice_and_payment(customer_name):
             "Temporary Opening - GG"
         )
 
-        print(
-            "Income Account:",
-            income_account
+        # ---------------------------------------------------------
+        # PREVENT DUPLICATE INVOICE
+        # ---------------------------------------------------------
+
+        existing_invoice = frappe.db.exists(
+            "Sales Invoice",
+            {
+                "customer": customer.name,
+                "posting_date": partial_start_date,
+                "custom_partial_start_date":
+                    partial_start_date
+            }
         )
+
+        if existing_invoice:
+
+            frappe.throw(
+                f"Sales Invoice {existing_invoice} already exists "
+                f"for this customer and start date."
+            )
 
         # ---------------------------------------------------------
         # CREATE SALES INVOICE
@@ -4840,10 +4632,6 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         invoice.customer = customer.name
-
-        # ---------------------------------------------------------
-        # POSTING DATE
-        # ---------------------------------------------------------
 
         invoice.posting_date = (
             partial_start_date
@@ -4866,24 +4654,7 @@ def create_partial_invoice_and_payment(customer_name):
             )
 
         # ---------------------------------------------------------
-        # ADD ITEM
-        # ---------------------------------------------------------
-        #
-        # IMPORTANT:
-        #
-        # The item rate is GROSS / VAT INCLUSIVE.
-        #
-        # Example:
-        #
-        # Date 1-9:
-        # Rate = 105
-        #
-        # Date 10-20:
-        # Rate = 52.50
-        #
-        # Date 21-25:
-        # Rate = 35
-        #
+        # ITEM
         # ---------------------------------------------------------
 
         invoice.append(
@@ -4904,20 +4675,7 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # VAT 5% INCLUDED IN ITEM RATE
-        # ---------------------------------------------------------
-        #
-        # Do NOT set:
-        #
-        # invoice.taxes_and_charges
-        #
-        # because we are manually adding the tax row.
-        #
-        # included_in_print_rate = 1
-        #
-        # means the VAT is already included
-        # inside the item rate.
-        #
+        # VAT 5% INCLUDED
         # ---------------------------------------------------------
 
         invoice.append(
@@ -4933,7 +4691,7 @@ def create_partial_invoice_and_payment(customer_name):
                     "VAT 5% Included",
 
                 "rate":
-                    vat_rate,
+                    5,
 
                 "included_in_print_rate":
                     1
@@ -4941,24 +4699,19 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # INSERT SALES INVOICE
+        # INSERT INVOICE
         # ---------------------------------------------------------
 
         invoice.insert(
             ignore_permissions=True
         )
 
-        print(
-            "Sales Invoice Inserted:",
-            invoice.name
-        )
-
         # ---------------------------------------------------------
-        # SUBMIT SALES INVOICE
+        # SUBMIT INVOICE
         # ---------------------------------------------------------
 
-        #invoice.submit()
         invoice.flags.ignore_permissions = True
+
         invoice.submit()
 
         print(
@@ -4966,74 +4719,19 @@ def create_partial_invoice_and_payment(customer_name):
             invoice.name
         )
 
-        print(
-            "Sales Invoice Net Total:",
-            invoice.net_total
-        )
-
-        print(
-            "Sales Invoice Total Taxes:",
-            invoice.total_taxes_and_charges
-        )
-
-        print(
-            "Sales Invoice Grand Total:",
-            invoice.grand_total
-        )
-
-        print(
-            "Sales Invoice Outstanding:",
-            invoice.outstanding_amount
-        )
-
         # ---------------------------------------------------------
         # CREATE PAYMENT ENTRY
         # ---------------------------------------------------------
-        #
-        # Payment Entry is always for FULL monthly rate.
-        #
-        # Example:
-        #
-        # Monthly Rate = 105
-        # Invoice = 52.50
-        #
-        # Payment Entry:
-        #
-        # Paid Amount = 105
-        # Allocated = 52.50
-        # Unallocated = 52.50
-        #
-        # ---------------------------------------------------------
-
-        payment_entry_name = None
 
         payment_entry = frappe.new_doc(
             "Payment Entry"
         )
 
-        # ---------------------------------------------------------
-        # PAYMENT TYPEe
-        # ---------------------------------------------------------
+        payment_entry.payment_type = "Receive"
 
-        payment_entry.payment_type = (
-            "Receive"
-        )
+        payment_entry.party_type = "Customer"
 
-        # ---------------------------------------------------------
-        # PARTY
-        # ---------------------------------------------------------
-
-        payment_entry.party_type = (
-            "Customer"
-        )
-
-        payment_entry.party = (
-            customer.name
-        )
-
-        # ---------------------------------------------------------
-        # POSTING DATE
-        # ---------------------------------------------------------
+        payment_entry.party = customer.name
 
         payment_entry.posting_date = (
             partial_start_date
@@ -5051,13 +4749,8 @@ def create_partial_invoice_and_payment(customer_name):
             monthly_rate
         )
 
-        print(
-            "Payment Entry Full Amount:",
-            monthly_rate
-        )
-
         # ---------------------------------------------------------
-        # PAYMENT ACCOUNT
+        # BANK ACCOUNT
         # ---------------------------------------------------------
 
         payment_entry.paid_to = (
@@ -5065,36 +4758,7 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # ALLOCATE PAYMENT TO SALES INVOICE
-        # ---------------------------------------------------------
-        #
-        # Allocate against GRAND TOTAL.
-        #
-        # This includes VAT.
-        #
-        # ---------------------------------------------------------
-
-        allocated_amount = min(
-            monthly_rate,
-            invoice.outstanding_amount
-        )
-
-        allocated_amount = round(
-            allocated_amount,
-            2
-        )
-
-        print(
-            "Amount To Allocate:",
-            allocated_amount
-        )
-
-        # ---------------------------------------------------------
         # PAYMENT REFERENCE
-        # ---------------------------------------------------------
-        #
-        # Required in some Bank configurations.
-        #
         # ---------------------------------------------------------
 
         if payment_entry.meta.has_field(
@@ -5114,7 +4778,21 @@ def create_partial_invoice_and_payment(customer_name):
             )
 
         # ---------------------------------------------------------
-        # ADD SALES INVOICE REFERENCE
+        # ALLOCATED AMOUNT
+        # ---------------------------------------------------------
+
+        allocated_amount = min(
+            monthly_rate,
+            invoice.outstanding_amount
+        )
+
+        allocated_amount = round(
+            allocated_amount,
+            2
+        )
+
+        # ---------------------------------------------------------
+        # PAYMENT ENTRY REFERENCE
         # ---------------------------------------------------------
 
         payment_entry.append(
@@ -5145,22 +4823,13 @@ def create_partial_invoice_and_payment(customer_name):
             ignore_permissions=True
         )
 
-        print(
-            "Payment Entry Inserted:",
-            payment_entry.name
-        )
-
         # ---------------------------------------------------------
         # SUBMIT PAYMENT ENTRY
         # ---------------------------------------------------------
 
-        
         payment_entry.flags.ignore_permissions = True
-        payment_entry.save()
 
-        payment_entry_name = (
-            payment_entry.name
-        )
+        payment_entry.submit()
 
         print(
             "Payment Entry Submitted:",
@@ -5168,22 +4837,12 @@ def create_partial_invoice_and_payment(customer_name):
         )
 
         # ---------------------------------------------------------
-        # CALCULATE ACTUAL UNALLOCATED AMOUNT
+        # UNALLOCATED AMOUNT
         # ---------------------------------------------------------
 
-        expected_unallocated = (
-            monthly_rate
-            - allocated_amount
-        )
-
         expected_unallocated = round(
-            expected_unallocated,
+            monthly_rate - allocated_amount,
             2
-        )
-
-        print(
-            "Expected Unallocated Amount:",
-            expected_unallocated
         )
 
         # ---------------------------------------------------------
@@ -5191,92 +4850,6 @@ def create_partial_invoice_and_payment(customer_name):
         # ---------------------------------------------------------
 
         frappe.db.commit()
-
-        # ---------------------------------------------------------
-        # FINAL LOG
-        # ---------------------------------------------------------
-
-        print(
-            "======================================"
-        )
-
-        print(
-            "PROCESS COMPLETED SUCCESSFULLY"
-        )
-
-        print(
-            "Customer:",
-            customer.name
-        )
-
-        print(
-            "Partial Start Date:",
-            partial_start_date
-        )
-
-        print(
-            "Partial Start Day:",
-            start_day
-        )
-
-        print(
-            "Billing Period:",
-            billing_period
-        )
-
-        print(
-            "Billing Divisor:",
-            billing_divisor
-        )
-
-        print(
-            "Monthly Rate INCLUDING VAT:",
-            monthly_rate
-        )
-
-        print(
-            "Invoice Net Amount:",
-            invoice.net_total
-        )
-
-        print(
-            "Invoice VAT:",
-            invoice.total_taxes_and_charges
-        )
-
-        print(
-            "Invoice Grand Total:",
-            invoice.grand_total
-        )
-
-        print(
-            "Payment Amount:",
-            monthly_rate
-        )
-
-        print(
-            "Allocated Amount:",
-            allocated_amount
-        )
-
-        print(
-            "Unallocated Amount:",
-            expected_unallocated
-        )
-
-        print(
-            "Sales Invoice:",
-            invoice.name
-        )
-
-        print(
-            "Payment Entry:",
-            payment_entry.name
-        )
-
-        print(
-            "======================================"
-        )
 
         # ---------------------------------------------------------
         # RETURN RESULT
@@ -5309,7 +4882,7 @@ def create_partial_invoice_and_payment(customer_name):
                 True,
 
             "vat_rate":
-                vat_rate,
+                5,
 
             "invoice_gross_amount":
                 invoice_amount,
@@ -5332,14 +4905,11 @@ def create_partial_invoice_and_payment(customer_name):
             "unallocated_amount":
                 expected_unallocated,
 
-            "remaining_amount":
-                remaining_amount,
-
             "sales_invoice":
                 invoice.name,
 
             "payment_entry":
-                payment_entry_name
+                payment_entry.name
         }
 
     except Exception:
@@ -5353,4 +4923,1674 @@ def create_partial_invoice_and_payment(customer_name):
 
         raise
 
+    finally:
 
+        # ---------------------------------------------------------
+        # RESTORE ORIGINAL USER
+        # ---------------------------------------------------------
+
+        frappe.set_user(
+            original_user
+        )
+import frappe
+from frappe.utils import getdate, today
+
+
+@frappe.whitelist()
+def create_payment_collections_from_sales_invoices(
+    from_date,
+    to_date=None
+):
+    """
+    Start background process to create Payment Collection
+    documents from Sales Invoices.
+
+    Process:
+
+    1. Fetch Sales Invoices between from_date and to_date.
+    2. Fetch customer mobile number from Customer master.
+    3. Group invoices by unique custom_new_mobile_no.
+    4. Create one Payment Collection per mobile number.
+    5. Add all related Sales Invoices into child table.
+
+    Example:
+
+        Jyoti 123 -> +971111111
+        Jyoti 234 -> +971111111
+        Jyoti 456 -> +971111111
+
+    Creates ONE Payment Collection:
+
+        Mobile No = +971111111
+
+    With 3 child rows.
+    """
+
+    # ---------------------------------------------------------
+    # VALIDATION
+    # ---------------------------------------------------------
+
+    if not from_date:
+        frappe.throw("From Date is required.")
+
+    from_date = getdate(from_date)
+
+    if to_date:
+        to_date = getdate(to_date)
+    else:
+        to_date = getdate(today())
+
+    if from_date > to_date:
+        frappe.throw("From Date cannot be greater than To Date.")
+
+    # ---------------------------------------------------------
+    # START BACKGROUND JOB
+    # ---------------------------------------------------------
+
+    frappe.enqueue(
+        "gogreen.api.create_payment_collections_background",
+        queue="long",
+        timeout=3600,
+        from_date=from_date,
+        to_date=to_date
+    )
+
+    return {
+        "success": True,
+        "message": (
+            f"Payment Collection creation started "
+            f"from {from_date} to {to_date}."
+        )
+    }
+
+
+def create_payment_collections_background(
+    from_date,
+    to_date
+):
+    """
+    Create / update Payment Collection documents grouped by
+    unique custom_new_mobile_no.
+
+    Monthly logic:
+
+    1. One Payment Collection per:
+           mobile_number + from_date
+
+    2. If the Payment Collection already exists:
+           - Do NOT create another Payment Collection.
+           - Check existing child invoices.
+           - Add only new invoices.
+
+    3. If a Sales Invoice already exists in ANY
+       Payment Collection:
+           - Do NOT add it again.
+
+    4. If a new Sales Invoice is found during a rerun:
+           - Add it to the existing Payment Collection.
+
+    Child table:
+        sales_invoice_collection
+
+    Child fields:
+        customer_name
+        sales_invoice
+        amount
+
+    Master fields:
+        mobile_number
+        from_date
+        to_date
+        total_amount
+
+    Amount:
+        outstanding_amount
+    """
+
+    frappe.set_user("Administrator")
+
+    # ---------------------------------------------------------
+    # LOG
+    # ---------------------------------------------------------
+
+    frappe.logger("payment_collection").info(
+        f"Payment Collection process started: "
+        f"{from_date} to {to_date}"
+    )
+
+    # ---------------------------------------------------------
+    # FETCH SALES INVOICES
+    # ---------------------------------------------------------
+
+    sales_invoices = frappe.get_all(
+        "Sales Invoice",
+        filters={
+            "posting_date": ["between", [from_date, to_date]],
+            "docstatus": 1
+        },
+        fields=[
+            "name",
+            "customer",
+            "customer_name",
+            "posting_date",
+            "grand_total",
+            "outstanding_amount"
+        ],
+        order_by="posting_date asc, name asc"
+    )
+
+    total_invoices = len(sales_invoices)
+
+    frappe.logger("payment_collection").info(
+        f"Total Sales Invoices found: {total_invoices}"
+    )
+
+    if not sales_invoices:
+
+        frappe.logger("payment_collection").info(
+            "No Sales Invoices found."
+        )
+
+        return
+
+    # ---------------------------------------------------------
+    # GET ALL SALES INVOICES ALREADY USED
+    # ---------------------------------------------------------
+    #
+    # This checks the child table of ALL Payment Collections.
+    #
+    # If SI-00001 is already present in any Payment Collection,
+    # it will not be added again.
+    #
+    # ---------------------------------------------------------
+
+    existing_invoice_rows = frappe.get_all(
+        "Sales Invoice Collection",
+        filters={
+            "sales_invoice": ["is", "set"]
+        },
+        fields=[
+            "sales_invoice"
+        ]
+    )
+
+    already_processed_invoices = set()
+
+    for row in existing_invoice_rows:
+
+        if row.sales_invoice:
+
+            already_processed_invoices.add(
+                row.sales_invoice
+            )
+
+    frappe.logger(
+        "payment_collection"
+    ).info(
+        f"Already processed Sales Invoices: "
+        f"{len(already_processed_invoices)}"
+    )
+
+    # ---------------------------------------------------------
+    # GET UNIQUE CUSTOMER NAMES
+    # ---------------------------------------------------------
+
+    customer_names = list(
+        set(
+            invoice.customer
+            for invoice in sales_invoices
+            if invoice.customer
+        )
+    )
+
+    # ---------------------------------------------------------
+    # CUSTOMER → MOBILE MAP
+    # ---------------------------------------------------------
+
+    customer_mobile_map = {}
+
+    batch_size = 500
+
+    for start in range(
+        0,
+        len(customer_names),
+        batch_size
+    ):
+
+        batch = customer_names[
+            start:start + batch_size
+        ]
+
+        customers = frappe.get_all(
+            "Customer",
+            filters={
+                "name": ["in", batch]
+            },
+            fields=[
+                "name",
+                "custom_new_mobile_no"
+            ]
+        )
+
+        for customer in customers:
+
+            mobile_no = customer.custom_new_mobile_no
+
+            if mobile_no:
+                mobile_no = str(
+                    mobile_no
+                ).strip()
+
+            customer_mobile_map[
+                customer.name
+            ] = mobile_no
+
+    # ---------------------------------------------------------
+    # GROUP INVOICES BY MOBILE NUMBER
+    # ---------------------------------------------------------
+
+    invoices_by_mobile = {}
+
+    skipped_no_mobile = 0
+    skipped_already_processed = 0
+
+    for invoice in sales_invoices:
+
+        # -----------------------------------------------------
+        # CHECK GLOBAL DUPLICATE
+        # -----------------------------------------------------
+        #
+        # If this invoice is already in ANY Payment Collection,
+        # don't process it again.
+        #
+        # -----------------------------------------------------
+
+        if invoice.name in already_processed_invoices:
+
+            skipped_already_processed += 1
+
+            frappe.logger(
+                "payment_collection"
+            ).info(
+                f"Skipping already processed invoice: "
+                f"{invoice.name}"
+            )
+
+            continue
+
+        # -----------------------------------------------------
+        # GET CUSTOMER
+        # -----------------------------------------------------
+
+        customer = invoice.customer
+
+        mobile_no = customer_mobile_map.get(
+            customer
+        )
+
+        # -----------------------------------------------------
+        # NO MOBILE NUMBER
+        # -----------------------------------------------------
+
+        if not mobile_no:
+
+            skipped_no_mobile += 1
+
+            frappe.logger(
+                "payment_collection"
+            ).warning(
+                f"Skipping {invoice.name}. "
+                f"Customer {customer} has no "
+                f"custom_new_mobile_no."
+            )
+
+            continue
+
+        # -----------------------------------------------------
+        # CREATE MOBILE GROUP
+        # -----------------------------------------------------
+
+        if mobile_no not in invoices_by_mobile:
+
+            invoices_by_mobile[
+                mobile_no
+            ] = []
+
+        # -----------------------------------------------------
+        # ADD INVOICE TO MOBILE GROUP
+        # -----------------------------------------------------
+
+        invoices_by_mobile[
+            mobile_no
+        ].append(invoice)
+
+    # ---------------------------------------------------------
+    # CREATE / UPDATE PAYMENT COLLECTIONS
+    # ---------------------------------------------------------
+
+    created_count = 0
+    updated_count = 0
+    skipped_collection_count = 0
+    added_invoice_count = 0
+
+    for mobile_no, invoices in invoices_by_mobile.items():
+
+        try:
+
+            # =================================================
+            # CHECK EXISTING PAYMENT COLLECTION
+            # =================================================
+            #
+            # IMPORTANT:
+            #
+            # Use mobile_number, NOT mobile_no.
+            #
+            # Both mobile_number AND from_date must match.
+            #
+            # Example:
+            #
+            # PAY-2026-09-00001
+            # mobile_number = +971111111
+            # from_date = 2026-09-01
+            #
+            # Running September again:
+            # -> existing collection found
+            #
+            # Running October:
+            # -> no collection found
+            # -> create new collection
+            #
+            # =================================================
+
+            existing_payment_collection = (
+                frappe.db.get_value(
+                    "Payment Collection",
+                    {
+                        "mobile_number": mobile_no,
+                        "from_date": from_date
+                    },
+                    "name",
+                    order_by="creation desc"
+                )
+            )
+
+            # =================================================
+            # EXISTING PAYMENT COLLECTION
+            # =================================================
+
+            if existing_payment_collection:
+
+                payment_collection = frappe.get_doc(
+                    "Payment Collection",
+                    existing_payment_collection
+                )
+
+                frappe.logger(
+                    "payment_collection"
+                ).info(
+                    f"Existing Payment Collection found: "
+                    f"{payment_collection.name} "
+                    f"for mobile {mobile_no} "
+                    f"and from_date {from_date}"
+                )
+
+                # -------------------------------------------------
+                # GET INVOICES ALREADY INSIDE THIS COLLECTION
+                # -------------------------------------------------
+
+                existing_child_invoices = set()
+
+                for row in (
+                    payment_collection
+                    .sales_invoice_collection
+                ):
+
+                    if row.sales_invoice:
+
+                        existing_child_invoices.add(
+                            row.sales_invoice
+                        )
+
+                # -------------------------------------------------
+                # CALCULATE EXISTING TOTAL
+                # -------------------------------------------------
+
+                total_amount = 0
+
+                for row in (
+                    payment_collection
+                    .sales_invoice_collection
+                ):
+
+                    total_amount += (
+                        row.amount or 0
+                    )
+
+                new_invoice_added = False
+
+                # -------------------------------------------------
+                # ADD ONLY NEW INVOICES
+                # -------------------------------------------------
+
+                for invoice in invoices:
+
+                    # ---------------------------------------------
+                    # ALREADY IN THIS PAYMENT COLLECTION
+                    # ---------------------------------------------
+
+                    if invoice.name in existing_child_invoices:
+
+                        frappe.logger(
+                            "payment_collection"
+                        ).info(
+                            f"Invoice {invoice.name} "
+                            f"already exists in "
+                            f"{payment_collection.name}. "
+                            f"Skipping."
+                        )
+
+                        continue
+
+                    # ---------------------------------------------
+                    # GLOBAL DUPLICATE CHECK
+                    # ---------------------------------------------
+                    #
+                    # This protects against an invoice already
+                    # being present in another Payment Collection.
+                    #
+                    # ---------------------------------------------
+
+                    if invoice.name in already_processed_invoices:
+
+                        frappe.logger(
+                            "payment_collection"
+                        ).info(
+                            f"Invoice {invoice.name} "
+                            f"already exists in another "
+                            f"Payment Collection. "
+                            f"Skipping."
+                        )
+
+                        continue
+
+                    # ---------------------------------------------
+                    # APPEND NEW CHILD ROW
+                    # ---------------------------------------------
+
+                    row = payment_collection.append(
+                        "sales_invoice_collection",
+                        {}
+                    )
+
+                    # ---------------------------------------------
+                    # CUSTOMER NAME
+                    # ---------------------------------------------
+
+                    row.customer_name = (
+                        invoice.customer_name
+                        or invoice.customer
+                    )
+
+                    # ---------------------------------------------
+                    # SALES INVOICE
+                    # ---------------------------------------------
+
+                    row.sales_invoice = (
+                        invoice.name
+                    )
+
+                    # ---------------------------------------------
+                    # AMOUNT
+                    # ---------------------------------------------
+                    #
+                    # Using outstanding amount.
+                    #
+                    # ---------------------------------------------
+
+                    amount = (
+                        invoice.outstanding_amount
+                        or 0
+                    )
+
+                    row.amount = amount
+
+                    # ---------------------------------------------
+                    # UPDATE TOTAL
+                    # ---------------------------------------------
+
+                    total_amount += amount
+
+                    # ---------------------------------------------
+                    # UPDATE DUPLICATE SETS
+                    # ---------------------------------------------
+
+                    existing_child_invoices.add(
+                        invoice.name
+                    )
+
+                    already_processed_invoices.add(
+                        invoice.name
+                    )
+
+                    new_invoice_added = True
+
+                    added_invoice_count += 1
+
+                    frappe.logger(
+                        "payment_collection"
+                    ).info(
+                        f"Added new invoice "
+                        f"{invoice.name} "
+                        f"to {payment_collection.name}. "
+                        f"Amount: {amount}"
+                    )
+
+                # -------------------------------------------------
+                # SAVE ONLY IF NEW INVOICE WAS ADDED
+                # -------------------------------------------------
+
+                if new_invoice_added:
+
+                    payment_collection.total_amount = (
+                        total_amount
+                    )
+
+                    payment_collection.save(
+                        ignore_permissions=True
+                    )
+
+                    updated_count += 1
+
+                    frappe.logger(
+                        "payment_collection"
+                    ).info(
+                        f"Updated Payment Collection "
+                        f"{payment_collection.name}. "
+                        f"New Total Amount: "
+                        f"{total_amount}"
+                    )
+
+                else:
+
+                    skipped_collection_count += 1
+
+                    frappe.logger(
+                        "payment_collection"
+                    ).info(
+                        f"No new invoices found for "
+                        f"{payment_collection.name}. "
+                        f"No changes made."
+                    )
+
+            # =================================================
+            # NO EXISTING PAYMENT COLLECTION
+            # =================================================
+
+            else:
+
+                # -------------------------------------------------
+                # CREATE NEW PAYMENT COLLECTION
+                # -------------------------------------------------
+
+                payment_collection = frappe.new_doc(
+                    "Payment Collection"
+                )
+
+                # -------------------------------------------------
+                # MOBILE NUMBER
+                # -------------------------------------------------
+
+                payment_collection.mobile_number = (
+                    mobile_no
+                )
+
+                # -------------------------------------------------
+                # DATE RANGE
+                # -------------------------------------------------
+
+                payment_collection.from_date = (
+                    from_date
+                )
+
+                if hasattr(
+                    payment_collection,
+                    "to_date"
+                ):
+
+                    payment_collection.to_date = (
+                        to_date
+                    )
+
+                # -------------------------------------------------
+                # TOTAL AMOUNT
+                # -------------------------------------------------
+
+                total_amount = 0
+
+                # -------------------------------------------------
+                # ADD CHILD ROWS
+                # -------------------------------------------------
+
+                new_invoice_count = 0
+
+                for invoice in invoices:
+
+                    # ---------------------------------------------
+                    # GLOBAL DUPLICATE CHECK
+                    # ---------------------------------------------
+
+                    if invoice.name in already_processed_invoices:
+
+                        frappe.logger(
+                            "payment_collection"
+                        ).info(
+                            f"Invoice {invoice.name} "
+                            f"already exists in another "
+                            f"Payment Collection. "
+                            f"Skipping."
+                        )
+
+                        continue
+
+                    # ---------------------------------------------
+                    # ADD CHILD ROW
+                    # ---------------------------------------------
+
+                    row = payment_collection.append(
+                        "sales_invoice_collection",
+                        {}
+                    )
+
+                    # Customer
+                    row.customer_name = (
+                        invoice.customer_name
+                        or invoice.customer
+                    )
+
+                    # Sales Invoice
+                    row.sales_invoice = (
+                        invoice.name
+                    )
+
+                    # Amount
+                    amount = (
+                        invoice.outstanding_amount
+                        or 0
+                    )
+
+                    row.amount = amount
+
+                    # Update total
+                    total_amount += amount
+
+                    # Update duplicate set
+                    already_processed_invoices.add(
+                        invoice.name
+                    )
+
+                    new_invoice_count += 1
+                    added_invoice_count += 1
+
+                # -------------------------------------------------
+                # ONLY CREATE IF THERE ARE NEW INVOICES
+                # -------------------------------------------------
+
+                if new_invoice_count > 0:
+
+                    payment_collection.total_amount = (
+                        total_amount
+                    )
+
+                    # -------------------------------------------------
+                    # INSERT
+                    # -------------------------------------------------
+
+                    payment_collection.insert(
+                        ignore_permissions=True
+                    )
+
+                    created_count += 1
+
+                    frappe.logger(
+                        "payment_collection"
+                    ).info(
+                        f"Created Payment Collection "
+                        f"{payment_collection.name} "
+                        f"for mobile {mobile_no}. "
+                        f"From Date: {from_date}. "
+                        f"Invoices: {new_invoice_count}. "
+                        f"Total Amount: {total_amount}"
+                    )
+
+                else:
+
+                    frappe.logger(
+                        "payment_collection"
+                    ).info(
+                        f"No new invoices available "
+                        f"for mobile {mobile_no}. "
+                        f"Payment Collection not created."
+                    )
+
+        except Exception:
+
+            frappe.log_error(
+                frappe.get_traceback(),
+                f"Payment Collection Error - {mobile_no}"
+            )
+
+    # ---------------------------------------------------------
+    # FINAL LOG
+    # ---------------------------------------------------------
+
+    frappe.logger(
+        "payment_collection"
+    ).info(
+        f"""
+        Payment Collection process completed.
+
+        Date Range:
+            {from_date} to {to_date}
+
+        Total Sales Invoices:
+            {total_invoices}
+
+        Unique Mobile Numbers:
+            {len(invoices_by_mobile)}
+
+        Payment Collections Created:
+            {created_count}
+
+        Payment Collections Updated:
+            {updated_count}
+
+        Payment Collections With No New Invoices:
+            {skipped_collection_count}
+
+        New Invoice Rows Added:
+            {added_invoice_count}
+
+        Already Processed Invoices:
+            {skipped_already_processed}
+
+        Invoices without Mobile:
+            {skipped_no_mobile}
+        """
+    )
+
+    # ---------------------------------------------------------
+    # COMMIT
+    # ---------------------------------------------------------
+
+    frappe.db.commit()
+    
+@frappe.whitelist()
+def create_stripe_payment_links_for_payment_collections(
+    from_date,
+    to_date=None
+):
+    """
+    Create Stripe Payment Links for Payment Collections
+    between from_date and to_date.
+
+    One Stripe Payment Link is created per Payment Collection.
+
+    Example:
+
+        Payment Collection:
+            PAY-2026-09-00001
+
+        Total Amount:
+            450 AED
+
+        Stripe Metadata:
+            payment_collection = PAY-2026-09-00001
+    """
+
+    import concurrent.futures
+    import time
+
+    # -------------------------------------------------------------
+    # VALIDATE DATES
+    # -------------------------------------------------------------
+
+    if not from_date:
+        frappe.throw("From Date is required.")
+
+    from_date = frappe.utils.getdate(from_date)
+
+    if to_date:
+        to_date = frappe.utils.getdate(to_date)
+    else:
+        to_date = from_date
+
+    if from_date > to_date:
+        frappe.throw(
+            "From Date cannot be greater than To Date."
+        )
+
+    # -------------------------------------------------------------
+    # START LOG
+    # -------------------------------------------------------------
+
+    print("\n" + "=" * 100)
+    print("STARTING STRIPE PAYMENT COLLECTION LINK CREATION")
+    print("=" * 100)
+
+    print(
+        f"From Date : {from_date}"
+    )
+
+    print(
+        f"To Date   : {to_date}"
+    )
+
+    # -------------------------------------------------------------
+    # STRIPE SECRET KEY
+    # -------------------------------------------------------------
+
+    print("\n[1] Checking Stripe Secret Key...")
+
+    stripe_secret_key = frappe.conf.get(
+        "stripe_secret_key"
+    )
+
+    if not stripe_secret_key:
+
+        print(
+            "[ERROR] Stripe Secret Key is NOT configured!"
+        )
+
+        frappe.throw(
+            "Stripe Secret Key is not configured."
+        )
+
+    print(
+        "[2] Stripe Secret Key found."
+    )
+
+    # -------------------------------------------------------------
+    # STRIPE PAYMENT LINKS API
+    # -------------------------------------------------------------
+
+    stripe_url = (
+        "https://api.stripe.com/v1/payment_links"
+    )
+
+    # -------------------------------------------------------------
+    # COUNTERS
+    # -------------------------------------------------------------
+
+    created = 0
+    failed = 0
+    skipped = 0
+    batch_number = 0
+
+    # -------------------------------------------------------------
+    # BATCH SETTINGS
+    # -------------------------------------------------------------
+
+    BATCH_SIZE = 50
+    MAX_WORKERS = 10
+
+    print("\n" + "-" * 100)
+    print("STARTING BATCH PROCESSING")
+    print(f"Batch Size    : {BATCH_SIZE}")
+    print(f"Workers       : {MAX_WORKERS}")
+    print(f"Stripe API    : {stripe_url}")
+    print("-" * 100)
+
+    # =============================================================
+    # PROCESS UNTIL NO PAYMENT COLLECTIONS ARE LEFT
+    # =============================================================
+
+    while True:
+
+        batch_number += 1
+
+        print("\n")
+        print("#" * 100)
+
+        print(
+            f"BATCH {batch_number} STARTED"
+        )
+
+        print("#" * 100)
+
+        # ---------------------------------------------------------
+        # GET NEXT 50 PAYMENT COLLECTIONS
+        # ---------------------------------------------------------
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Fetching next {BATCH_SIZE} Payment Collections..."
+        )
+
+        payment_collections = frappe.get_all(
+            "Payment Collection",
+
+            filters={
+                "from_date": [
+                    "between",
+                    [from_date, to_date]
+                ],
+
+                # Only collections which do not
+                # already have Stripe Payment Link
+                "stripe_payment_link": [
+                    "is",
+                    "not set"
+                ]
+            },
+
+            fields=[
+                "name",
+                "mobile_number",
+                "from_date",
+                "to_date",
+                "total_amount",
+                "stripe_payment_link"
+            ],
+
+            order_by="creation asc",
+
+            limit_page_length=BATCH_SIZE
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Payment Collections fetched: "
+            f"{len(payment_collections)}"
+        )
+
+        # ---------------------------------------------------------
+        # NO MORE PAYMENT COLLECTIONS
+        # ---------------------------------------------------------
+
+        if not payment_collections:
+
+            print("\n" + "=" * 100)
+            print("NO MORE PAYMENT COLLECTIONS FOUND")
+            print("=" * 100)
+
+            break
+
+        # ---------------------------------------------------------
+        # PROCESSING
+        # ---------------------------------------------------------
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Processing "
+            f"{len(payment_collections)} Payment Collections..."
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"First Payment Collection : "
+            f"{payment_collections[0].name}"
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Last Payment Collection  : "
+            f"{payment_collections[-1].name}"
+        )
+
+        batch_created = 0
+        batch_failed = 0
+
+        # =========================================================
+        # PREPARE STRIPE TASKS
+        #
+        # IMPORTANT:
+        #
+        # Only plain data is passed to worker threads.
+        #
+        # No frappe.db / frappe.get_doc inside workers.
+        # =========================================================
+
+        payment_collection_tasks = []
+
+        for index, payment_collection in enumerate(
+            payment_collections,
+            start=1
+        ):
+
+            try:
+
+                payment_collection_tasks.append({
+
+                    "payment_collection_name":
+                        payment_collection.name,
+
+                    "total_amount":
+                        payment_collection.total_amount or 0,
+
+                    "index":
+                        index
+                })
+
+            except Exception:
+
+                batch_failed += 1
+                failed += 1
+
+                error_message = (
+                    frappe.get_traceback()
+                )
+
+                print(
+                    f"[{payment_collection.name}] "
+                    f"Failed to prepare Stripe task"
+                )
+
+                print(
+                    error_message
+                )
+
+                frappe.log_error(
+                    error_message,
+                    (
+                        "Payment Collection "
+                        "Task Preparation Error - "
+                        f"{payment_collection.name}"
+                    )
+                )
+
+        # =========================================================
+        # START CONCURRENT STRIPE WORKERS
+        # =========================================================
+
+        print("\n")
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Starting {MAX_WORKERS} concurrent workers..."
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=MAX_WORKERS
+        ) as executor:
+
+            future_to_payment_collection = {}
+
+            # -----------------------------------------------------
+            # SUBMIT STRIPE REQUESTS
+            # -----------------------------------------------------
+
+            for task in payment_collection_tasks:
+
+                payment_collection_name = (
+                    task[
+                        "payment_collection_name"
+                    ]
+                )
+
+                total_amount = (
+                    task[
+                        "total_amount"
+                    ]
+                )
+
+                index = task[
+                    "index"
+                ]
+
+                print(
+                    f"[Batch {batch_number}] "
+                    f"Submitting "
+                    f"Payment Collection "
+                    f"{index}/{len(payment_collection_tasks)}: "
+                    f"{payment_collection_name}"
+                )
+
+                future = executor.submit(
+
+                    create_single_payment_collection_link,
+
+                    payment_collection_name,
+
+                    total_amount,
+
+                    stripe_secret_key,
+
+                    stripe_url,
+
+                    batch_number,
+
+                    index,
+
+                    len(payment_collection_tasks)
+                )
+
+                future_to_payment_collection[
+                    future
+                ] = payment_collection_name
+
+                # -------------------------------------------------
+                # SMALL RATE LIMITING DELAY
+                # -------------------------------------------------
+
+                time.sleep(
+                    0.05
+                )
+
+            # -----------------------------------------------------
+            # PROCESS COMPLETED STRIPE REQUESTS
+            # -----------------------------------------------------
+
+            for future in concurrent.futures.as_completed(
+                future_to_payment_collection
+            ):
+
+                payment_collection_name = (
+                    future_to_payment_collection[
+                        future
+                    ]
+                )
+
+                try:
+
+                    result = future.result()
+
+                    # =================================================
+                    # SUCCESS
+                    # =================================================
+
+                    if result.get("success"):
+
+                        payment_link = (
+                            result.get(
+                                "payment_link"
+                            )
+                        )
+
+                        payment_link_id = (
+                            result.get(
+                                "payment_link_id"
+                            )
+                        )
+
+                        print("\n")
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"SUCCESS"
+                        )
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"Payment Link ID: "
+                            f"{payment_link_id}"
+                        )
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"Payment Link: "
+                            f"{payment_link}"
+                        )
+
+                        # -------------------------------------------------
+                        # MAIN THREAD - SAFE Frappe DB UPDATE
+                        # -------------------------------------------------
+
+                        frappe.db.set_value(
+
+                            "Payment Collection",
+
+                            payment_collection_name,
+
+                            {
+                                "stripe_payment_link":
+                                    payment_link,
+
+                                "stripe_payment_link_id":
+                                    payment_link_id,
+
+                                "stripe_payment_status":
+                                    "Created"
+                            },
+
+                            update_modified=False
+                        )
+
+                        batch_created += 1
+                        created += 1
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"Payment Collection updated."
+                        )
+
+                        print(
+                            f"Total Created : "
+                            f"{created}"
+                        )
+
+                    # =================================================
+                    # FAILED
+                    # =================================================
+
+                    else:
+
+                        batch_failed += 1
+                        failed += 1
+
+                        error_message = (
+                            result.get(
+                                "error",
+                                "Unknown error"
+                            )
+                        )
+
+                        print("\n")
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"FAILED"
+                        )
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"Error: "
+                            f"{error_message}"
+                        )
+
+                        frappe.log_error(
+                            error_message,
+                            (
+                                "Payment Collection "
+                                "Payment Link Error - "
+                                f"{payment_collection_name}"
+                            )
+                        )
+
+                except Exception:
+
+                    batch_failed += 1
+                    failed += 1
+
+                    error_message = (
+                        frappe.get_traceback()
+                    )
+
+                    print("\n")
+                    print("!" * 100)
+
+                    print(
+                        f"EXCEPTION FOR PAYMENT COLLECTION: "
+                        f"{payment_collection_name}"
+                    )
+
+                    print("!" * 100)
+
+                    print(
+                        error_message
+                    )
+
+                    frappe.log_error(
+                        error_message,
+                        (
+                            "Payment Collection "
+                            "Payment Link Exception - "
+                            f"{payment_collection_name}"
+                        )
+                    )
+
+        # =========================================================
+        # COMMIT AFTER EACH BATCH
+        # =========================================================
+
+        print("\n")
+        print("-" * 100)
+
+        print(
+            f"BATCH {batch_number} COMPLETED"
+        )
+
+        print(
+            f"Batch Size       : "
+            f"{len(payment_collections)}"
+        )
+
+        print(
+            f"Batch Created    : "
+            f"{batch_created}"
+        )
+
+        print(
+            f"Batch Failed     : "
+            f"{batch_failed}"
+        )
+
+        print(
+            f"Total Created    : "
+            f"{created}"
+        )
+
+        print(
+            f"Total Failed     : "
+            f"{failed}"
+        )
+
+        print(
+            f"Committing Batch {batch_number}..."
+        )
+
+        frappe.db.commit()
+
+        print(
+            f"Batch {batch_number} "
+            f"COMMITTED SUCCESSFULLY"
+        )
+
+        print("-" * 100)
+
+    # =============================================================
+    # FINAL COMMIT
+    # =============================================================
+
+    print("\n")
+    print("=" * 100)
+
+    print(
+        "PAYMENT COLLECTION STRIPE LINK CREATION COMPLETED"
+    )
+
+    print("=" * 100)
+
+    frappe.db.commit()
+
+    print(
+        f"From Date    : {from_date}"
+    )
+
+    print(
+        f"To Date      : {to_date}"
+    )
+
+    print(
+        f"Total Created : {created}"
+    )
+
+    print(
+        f"Total Failed  : {failed}"
+    )
+
+    print(
+        f"Total Batches : {batch_number}"
+    )
+
+    print("=" * 100)
+
+    return {
+
+        "from_date":
+            from_date,
+
+        "to_date":
+            to_date,
+
+        "created":
+            created,
+
+        "failed":
+            failed,
+
+        "batches":
+            batch_number
+    }
+    
+def create_single_payment_collection_link(
+    payment_collection_name,
+    total_amount,
+    stripe_secret_key,
+    stripe_url,
+    batch_number,
+    index,
+    total_count
+):
+    """
+    Create one Stripe Payment Link for one
+    Payment Collection.
+
+    IMPORTANT:
+
+    This function only talks to Stripe.
+
+    It does NOT use frappe.db or frappe.get_doc.
+    """
+
+    import requests
+
+    try:
+
+        # ---------------------------------------------------------
+        # VALIDATE AMOUNT
+        # ---------------------------------------------------------
+
+        total_amount = (
+            total_amount or 0
+        )
+
+        if float(total_amount) <= 0:
+
+            return {
+                "success": False,
+                "error": (
+                    "Payment Collection total amount "
+                    "must be greater than 0."
+                )
+            }
+
+        # ---------------------------------------------------------
+        # AMOUNT IN FILS
+        # ---------------------------------------------------------
+
+        amount_in_fils = int(
+            round(
+                float(total_amount) * 100
+            )
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"[{payment_collection_name}] "
+            f"Amount: {total_amount} AED"
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"[{payment_collection_name}] "
+            f"Amount in fils: {amount_in_fils}"
+        )
+
+        # ---------------------------------------------------------
+        # STRIPE HEADERS
+        # ---------------------------------------------------------
+
+        headers = {
+
+            "Authorization":
+                f"Bearer {stripe_secret_key}",
+
+            "Content-Type":
+                "application/x-www-form-urlencoded"
+        }
+
+        # ---------------------------------------------------------
+        # STRIPE PAYMENT LINK DATA
+        # ---------------------------------------------------------
+
+        data = {
+
+            # -----------------------------------------------------
+            # CURRENCY
+            # -----------------------------------------------------
+
+            "line_items[0][price_data][currency]":
+                "aed",
+
+            # -----------------------------------------------------
+            # PRODUCT NAME
+            # -----------------------------------------------------
+
+            "line_items[0][price_data][product_data][name]":
+                "Go Green Service",
+
+            # -----------------------------------------------------
+            # AMOUNT
+            # -----------------------------------------------------
+
+            "line_items[0][price_data][unit_amount]":
+                str(amount_in_fils),
+
+            # -----------------------------------------------------
+            # QUANTITY
+            # -----------------------------------------------------
+
+            "line_items[0][quantity]":
+                "1",
+
+            # -----------------------------------------------------
+            # AFTER PAYMENT
+            # -----------------------------------------------------
+
+            "after_completion[type]":
+                "hosted_confirmation",
+
+            # -----------------------------------------------------
+            # PAYMENT LINK METADATA
+            # -----------------------------------------------------
+
+            "metadata[payment_collection]":
+                payment_collection_name,
+
+            # -----------------------------------------------------
+            # PAYMENT INTENT METADATA
+            # -----------------------------------------------------
+
+            "payment_intent_data[metadata][payment_collection]":
+                payment_collection_name
+        }
+
+        # ---------------------------------------------------------
+        # CREATE PAYMENT LINK
+        # ---------------------------------------------------------
+
+        response = requests.post(
+
+            stripe_url,
+
+            headers=headers,
+
+            data=data,
+
+            timeout=60
+        )
+
+        # ---------------------------------------------------------
+        # STRIPE ERROR
+        # ---------------------------------------------------------
+
+        if response.status_code != 200:
+
+            print(
+                f"[{payment_collection_name}] "
+                f"Stripe HTTP Error: "
+                f"{response.status_code}"
+            )
+
+            print(
+                f"[{payment_collection_name}] "
+                f"Stripe Response: "
+                f"{response.text}"
+            )
+
+            return {
+
+                "success":
+                    False,
+
+                "error":
+                    (
+                        f"HTTP {response.status_code}: "
+                        f"{response.text}"
+                    )
+            }
+
+        # ---------------------------------------------------------
+        # RESPONSE
+        # ---------------------------------------------------------
+
+        stripe_data = (
+            response.json()
+        )
+
+        payment_link = (
+            stripe_data.get(
+                "url"
+            )
+        )
+
+        payment_link_id = (
+            stripe_data.get(
+                "id"
+            )
+        )
+
+        # ---------------------------------------------------------
+        # VALIDATE URL
+        # ---------------------------------------------------------
+
+        if not payment_link:
+
+            return {
+
+                "success":
+                    False,
+
+                "error":
+                    (
+                        "Stripe did not return "
+                        "Payment Link URL."
+                    )
+            }
+
+        # ---------------------------------------------------------
+        # SUCCESS
+        # ---------------------------------------------------------
+
+        return {
+
+            "success":
+                True,
+
+            "payment_collection":
+                payment_collection_name,
+
+            "payment_link":
+                payment_link,
+
+            "payment_link_id":
+                payment_link_id,
+
+            "amount":
+                total_amount
+        }
+
+    except Exception:
+
+        return {
+
+            "success":
+                False,
+
+            "error":
+                (
+                    "Exception while creating Stripe "
+                    "Payment Link:\n"
+                    f"{__import__('traceback').format_exc()}"
+                )
+        }
