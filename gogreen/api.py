@@ -7206,3 +7206,535 @@ def new_payment_stripe_webhook():
         # -----------------------------------------
 
         frappe.set_user(original_user)
+        
+@frappe.whitelist()
+def create_partial_sales_invoice(
+    customer,
+    new_status,
+    partial_start_date=None,
+    custom_rate=None
+):
+    """
+    Create Partial Sales Invoice when Customer status changes:
+
+        Active -> Partial
+
+    Partial billing logic:
+
+        1-9   = Full
+        10-20 = Half
+        21-25 = One Third
+        26-31 = Not Supported
+
+    Income Account is selected based on:
+        Customer -> custom_greatgrandparent_name
+    """
+
+    # ---------------------------------------------------------
+    # VALIDATE CUSTOMER
+    # ---------------------------------------------------------
+
+    if not customer:
+        frappe.throw("Customer is required.")
+
+    print("==========================================")
+    print("CREATE PARTIAL SALES INVOICE")
+    print("Customer:", customer)
+    print("New Status:", new_status)
+    print("Partial Start Date:", partial_start_date)
+    print("Custom Rate:", custom_rate)
+    print("==========================================")
+
+    # ---------------------------------------------------------
+    # GET CURRENT SAVED CUSTOMER
+    # ---------------------------------------------------------
+
+    customer_data = frappe.db.get_value(
+        "Customer",
+        customer,
+        [
+            "custom_status",
+            "custom_partial_start_date",
+            "custom_rate",
+            "custom_greatgrandparent_name"
+        ],
+        as_dict=True
+    )
+
+    if not customer_data:
+        frappe.throw(
+            "Customer {0} was not found.".format(customer)
+        )
+
+    print("------------------------------------------")
+    print("CUSTOMER DATA")
+    print("------------------------------------------")
+
+    print(
+        "Saved Customer Status:",
+        customer_data.custom_status
+    )
+
+    print(
+        "Saved Partial Start Date:",
+        customer_data.custom_partial_start_date
+    )
+
+    print(
+        "Saved Custom Rate:",
+        customer_data.custom_rate
+    )
+
+    print(
+        "Great Grandparent:",
+        customer_data.custom_greatgrandparent_name
+    )
+
+    # ---------------------------------------------------------
+    # CHECK STATUS
+    # ---------------------------------------------------------
+
+    old_status = customer_data.custom_status
+
+    if old_status != "Active":
+
+        return {
+            "success": False,
+            "created": False,
+            "message": (
+                "Invoice not created because existing Customer "
+                "status is '{0}', not 'Active'."
+            ).format(old_status)
+        }
+
+    if new_status != "Partial":
+
+        return {
+            "success": False,
+            "created": False,
+            "message": "New status is not Partial."
+        }
+
+    print("------------------------------------------")
+    print("STATUS VALIDATION PASSED")
+    print("------------------------------------------")
+
+    print(
+        "Old Status:",
+        old_status
+    )
+
+    print(
+        "New Status:",
+        new_status
+    )
+
+    # ---------------------------------------------------------
+    # GET PARTIAL START DATE
+    # ---------------------------------------------------------
+
+    if not partial_start_date:
+
+        partial_start_date = (
+            customer_data.custom_partial_start_date
+        )
+
+    if not partial_start_date:
+
+        frappe.throw(
+            "Please enter Partial Start Date."
+        )
+
+    partial_start_date = getdate(
+        partial_start_date
+    )
+
+    print("------------------------------------------")
+    print("PARTIAL START DATE")
+    print("------------------------------------------")
+
+    print(
+        "Partial Start Date:",
+        partial_start_date
+    )
+
+    # ---------------------------------------------------------
+    # GET MONTHLY RATE
+    # ---------------------------------------------------------
+
+    if custom_rate is None:
+
+        custom_rate = customer_data.custom_rate
+
+    if not custom_rate:
+
+        frappe.throw(
+            "Please enter Custom Rate."
+        )
+
+    monthly_rate = float(custom_rate)
+
+    print("------------------------------------------")
+    print("MONTHLY RATE")
+    print("------------------------------------------")
+
+    print(
+        "Monthly Rate:",
+        monthly_rate
+    )
+
+    # ---------------------------------------------------------
+    # GET START DAY
+    # ---------------------------------------------------------
+
+    start_day = partial_start_date.day
+
+    print("------------------------------------------")
+    print("START DAY")
+    print("------------------------------------------")
+
+    print(
+        "Start Day:",
+        start_day
+    )
+
+    # ---------------------------------------------------------
+    # CALCULATE PARTIAL INVOICE
+    # ---------------------------------------------------------
+
+    if 1 <= start_day <= 9:
+
+        billing_divisor = 1
+        billing_period = "Full"
+        invoice_amount = monthly_rate
+
+    elif 10 <= start_day <= 20:
+
+        billing_divisor = 2
+        billing_period = "Half"
+        invoice_amount = monthly_rate / 2
+
+    elif 21 <= start_day <= 25:
+
+        billing_divisor = 3
+        billing_period = "One Third"
+        invoice_amount = monthly_rate / 3
+
+    else:
+
+        frappe.throw(
+            "Partial Start Date from 26th to 31st "
+            "is not currently supported."
+        )
+
+    # ---------------------------------------------------------
+    # ROUND AMOUNT
+    # ---------------------------------------------------------
+
+    invoice_amount = round(
+        invoice_amount,
+        2
+    )
+
+    print("------------------------------------------")
+    print("PARTIAL CALCULATION")
+    print("------------------------------------------")
+
+    print(
+        "Billing Period:",
+        billing_period
+    )
+
+    print(
+        "Billing Divisor:",
+        billing_divisor
+    )
+
+    print(
+        "Monthly Rate:",
+        monthly_rate
+    )
+
+    print(
+        "Invoice Amount:",
+        invoice_amount
+    )
+
+    # ---------------------------------------------------------
+    # GET CUSTOMER GREAT GRANDPARENT
+    # ---------------------------------------------------------
+
+    greatgrandparent_name = (
+        customer_data.custom_greatgrandparent_name
+    )
+
+    print("------------------------------------------")
+    print("GREAT GRANDPARENT")
+    print("------------------------------------------")
+
+    print(
+        "Great Grandparent:",
+        greatgrandparent_name
+    )
+
+    # ---------------------------------------------------------
+    # INCOME ACCOUNT
+    # ---------------------------------------------------------
+
+    income_account_map = {
+
+        "Downtown":
+            "Sales-Downtown - GG",
+
+        "Dubai Hills":
+            "Sales-Dubai Hills - GG",
+
+        "JLT":
+            "Sales-JLT - GG",
+
+        "Palm Jumeirah":
+            "Sales-Palm Jumeirah - GG",
+
+        "Creek Harbour":
+            "Sales-Creek Harbour - GG"
+    }
+
+    income_account = income_account_map.get(
+        greatgrandparent_name,
+        "Temporary Opening - GG"
+    )
+
+    print("------------------------------------------")
+    print("INCOME ACCOUNT")
+    print("------------------------------------------")
+
+    print(
+        "Great Grandparent:",
+        greatgrandparent_name
+    )
+
+    print(
+        "Income Account:",
+        income_account
+    )
+
+    # ---------------------------------------------------------
+    # ITEM
+    # ---------------------------------------------------------
+
+    item_code = "Go Green service"
+
+    print("------------------------------------------")
+    print("ITEM")
+    print("------------------------------------------")
+
+    print(
+        "Item Code:",
+        item_code
+    )
+
+    # ---------------------------------------------------------
+    # CHECK EXISTING PARTIAL INVOICE
+    #
+    # Prevent duplicate invoice for same customer/date/item
+    # ---------------------------------------------------------
+
+    existing_invoice = frappe.db.sql(
+        """
+        SELECT DISTINCT si.name
+        FROM `tabSales Invoice` si
+        INNER JOIN `tabSales Invoice Item` sii
+            ON sii.parent = si.name
+        WHERE si.customer = %s
+          AND si.posting_date = %s
+          AND sii.item_code = %s
+          AND si.docstatus IN (0, 1)
+        LIMIT 1
+        """,
+        (
+            customer,
+            partial_start_date,
+            item_code
+        ),
+        as_dict=True
+    )
+
+    if existing_invoice:
+
+        print("------------------------------------------")
+        print("DUPLICATE INVOICE FOUND")
+        print("------------------------------------------")
+
+        print(
+            "Existing Invoice:",
+            existing_invoice[0].name
+        )
+
+        return {
+            "success": True,
+            "created": False,
+            "invoice": existing_invoice[0].name,
+            "billing_period": billing_period,
+            "invoice_amount": invoice_amount,
+            "income_account": income_account,
+            "message": (
+                "Partial Sales Invoice {0} already exists."
+            ).format(
+                existing_invoice[0].name
+            )
+        }
+
+    # ---------------------------------------------------------
+    # CREATE SALES INVOICE
+    # ---------------------------------------------------------
+
+    print("------------------------------------------")
+    print("CREATING SALES INVOICE")
+    print("------------------------------------------")
+
+    invoice = frappe.new_doc(
+        "Sales Invoice"
+    )
+
+    # ---------------------------------------------------------
+    # CUSTOMER
+    # ---------------------------------------------------------
+
+    invoice.customer = customer
+
+    # ---------------------------------------------------------
+    # POSTING DATE
+    # ---------------------------------------------------------
+
+    invoice.posting_date = partial_start_date
+
+    # ---------------------------------------------------------
+    # DUE DATE
+    # ---------------------------------------------------------
+
+    invoice.due_date = partial_start_date
+
+    # ---------------------------------------------------------
+    # ADD ITEM
+    # ---------------------------------------------------------
+
+    invoice.append(
+        "items",
+        {
+            "item_code": item_code,
+            "qty": 1,
+            "rate": invoice_amount,
+            "income_account": income_account
+        }
+    )
+
+    print("------------------------------------------")
+    print("SALES INVOICE DATA")
+    print("------------------------------------------")
+
+    print(
+        "Customer:",
+        invoice.customer
+    )
+
+    print(
+        "Posting Date:",
+        invoice.posting_date
+    )
+
+    print(
+        "Due Date:",
+        invoice.due_date
+    )
+
+    print(
+        "Item:",
+        item_code
+    )
+
+    print(
+        "Qty:",
+        1
+    )
+
+    print(
+        "Rate:",
+        invoice_amount
+    )
+
+    print(
+        "Income Account:",
+        income_account
+    )
+
+    # ---------------------------------------------------------
+    # OPTIONAL CUSTOM FIELDS
+    #
+    # Uncomment these if you have these fields on Sales Invoice.
+    # ---------------------------------------------------------
+
+    # invoice.custom_billing_period = billing_period
+    # invoice.custom_partial_start_date = partial_start_date
+
+    # ---------------------------------------------------------
+    # INSERT
+    # ---------------------------------------------------------
+
+    print("------------------------------------------")
+    print("INSERTING SALES INVOICE")
+    print("------------------------------------------")
+
+    invoice.insert(
+        ignore_permissions=True
+    )
+
+    print(
+        "Sales Invoice Created:",
+        invoice.name
+    )
+
+    # ---------------------------------------------------------
+    # SUBMIT
+    # ---------------------------------------------------------
+    #
+    # Currently keeping invoice as DRAFT.
+    #
+    # If you want to automatically submit it,
+    # replace this section with:
+    #
+    # invoice.submit()
+    #
+    # ---------------------------------------------------------
+
+    print("------------------------------------------")
+    print("SALES INVOICE CREATED AS DRAFT")
+    print("------------------------------------------")
+
+    # ---------------------------------------------------------
+    # RETURN RESULT
+    # ---------------------------------------------------------
+
+    print("==========================================")
+    print("PARTIAL SALES INVOICE COMPLETED")
+    print("Invoice:", invoice.name)
+    print("Amount:", invoice_amount)
+    print("Income Account:", income_account)
+    print("==========================================")
+
+    return {
+        "success": True,
+        "created": True,
+        "invoice": invoice.name,
+        "billing_period": billing_period,
+        "billing_divisor": billing_divisor,
+        "monthly_rate": monthly_rate,
+        "invoice_amount": invoice_amount,
+        "posting_date": str(partial_start_date),
+        "income_account": income_account,
+        "greatgrandparent_name": greatgrandparent_name,
+        "message": (
+            "Partial Sales Invoice {0} created successfully."
+        ).format(
+            invoice.name
+        )
+    }
