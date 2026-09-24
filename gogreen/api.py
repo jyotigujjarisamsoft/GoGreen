@@ -1768,7 +1768,7 @@ def create_monthly_sales_invoices_background(docname):
 
             filters={
         "custom_customer_typee": doc.customer_type,
-        "custom_status": ["in", ["Active", "Partial"]]
+        "custom_status": "Active"
     },
 
 
@@ -7661,7 +7661,7 @@ def create_partial_sales_invoice(
 
     invoice.customer = customer
 
-    invoice.edit_posting_date_and_time = 1
+    invoice.set_posting_time = 1
 
     # ---------------------------------------------------------
     # POSTING DATE
