@@ -7228,6 +7228,10 @@ def create_partial_sales_invoice(
 
     Income Account is selected based on:
         Customer -> custom_greatgrandparent_name
+
+    Duplicate validation:
+        Only one Partial Sales Invoice is allowed
+        for the same Customer + Item + Calendar Month.
     """
 
     # ---------------------------------------------------------
@@ -7536,8 +7540,39 @@ def create_partial_sales_invoice(
     # ---------------------------------------------------------
     # CHECK EXISTING PARTIAL INVOICE
     #
-    # Prevent duplicate invoice for same customer/date/item
+    # Prevent duplicate invoice for:
+    #
+    # SAME CUSTOMER
+    # SAME ITEM
+    # SAME CALENDAR MONTH
     # ---------------------------------------------------------
+
+    month_start = frappe.utils.get_first_day(
+        partial_start_date
+    )
+
+    month_end = frappe.utils.get_last_day(
+        partial_start_date
+    )
+
+    print("------------------------------------------")
+    print("MONTH DUPLICATE VALIDATION")
+    print("------------------------------------------")
+
+    print(
+        "Partial Start Date:",
+        partial_start_date
+    )
+
+    print(
+        "Month Start:",
+        month_start
+    )
+
+    print(
+        "Month End:",
+        month_end
+    )
 
     existing_invoice = frappe.db.sql(
         """
@@ -7546,18 +7581,24 @@ def create_partial_sales_invoice(
         INNER JOIN `tabSales Invoice Item` sii
             ON sii.parent = si.name
         WHERE si.customer = %s
-          AND si.posting_date = %s
+          AND si.posting_date >= %s
+          AND si.posting_date <= %s
           AND sii.item_code = %s
           AND si.docstatus IN (0, 1)
         LIMIT 1
         """,
         (
             customer,
-            partial_start_date,
+            month_start,
+            month_end,
             item_code
         ),
         as_dict=True
     )
+
+    # ---------------------------------------------------------
+    # DUPLICATE FOUND
+    # ---------------------------------------------------------
 
     if existing_invoice:
 
@@ -7570,19 +7611,37 @@ def create_partial_sales_invoice(
             existing_invoice[0].name
         )
 
-        return {
-            "success": True,
-            "created": False,
-            "invoice": existing_invoice[0].name,
-            "billing_period": billing_period,
-            "invoice_amount": invoice_amount,
-            "income_account": income_account,
-            "message": (
-                "Partial Sales Invoice {0} already exists."
-            ).format(
-                existing_invoice[0].name
+        print(
+            "Customer:",
+            customer
+        )
+
+        print(
+            "Month Start:",
+            month_start
+        )
+
+        print(
+            "Month End:",
+            month_end
+        )
+
+        frappe.throw(
+            "Already a Sales Invoice is created for this "
+            "particular month for this customer.<br><br>"
+            "Existing Invoice: <b>{0}</b><br><br>"
+            "Invoice Month: <b>{1}</b> to <b>{2}</b>"
+            .format(
+                existing_invoice[0].name,
+                month_start,
+                month_end
             )
-        }
+        )
+
+    print(
+        "No existing invoice found for this customer "
+        "in this month."
+    )
 
     # ---------------------------------------------------------
     # CREATE SALES INVOICE
@@ -7601,6 +7660,8 @@ def create_partial_sales_invoice(
     # ---------------------------------------------------------
 
     invoice.customer = customer
+
+    invoice.edit_posting_date_and_time = 1
 
     # ---------------------------------------------------------
     # POSTING DATE
@@ -7627,6 +7688,46 @@ def create_partial_sales_invoice(
             "income_account": income_account
         }
     )
+
+    # ---------------------------------------------------------
+    # VAT / SALES TAX TEMPLATE
+    # ---------------------------------------------------------
+
+    print("------------------------------------------")
+    print("ADDING VAT")
+    print("------------------------------------------")
+
+    invoice.taxes_and_charges = "UAE VAT 5% - GG"
+
+    invoice.append(
+        "taxes",
+        {
+            "charge_type": "On Net Total",
+            "account_head": "VAT 5% - GG",
+            "description": "VAT 5%",
+            "rate": 5.0,
+            "included_in_print_rate": 0
+        }
+    )
+
+    print(
+        "Taxes and Charges:",
+        invoice.taxes_and_charges
+    )
+
+    print(
+        "VAT Account:",
+        "VAT 5% - GG"
+    )
+
+    print(
+        "VAT Rate:",
+        5.0
+    )
+
+    # ---------------------------------------------------------
+    # SALES INVOICE DATA
+    # ---------------------------------------------------------
 
     print("------------------------------------------")
     print("SALES INVOICE DATA")
@@ -7667,10 +7768,16 @@ def create_partial_sales_invoice(
         income_account
     )
 
+    print(
+        "Taxes and Charges:",
+        invoice.taxes_and_charges
+    )
+
     # ---------------------------------------------------------
     # OPTIONAL CUSTOM FIELDS
     #
-    # Uncomment these if you have these fields on Sales Invoice.
+    # Uncomment these if you have these fields
+    # on Sales Invoice.
     # ---------------------------------------------------------
 
     # invoice.custom_billing_period = billing_period
@@ -7700,7 +7807,7 @@ def create_partial_sales_invoice(
     # Currently keeping invoice as DRAFT.
     #
     # If you want to automatically submit it,
-    # replace this section with:
+    # use:
     #
     # invoice.submit()
     #
@@ -7719,6 +7826,7 @@ def create_partial_sales_invoice(
     print("Invoice:", invoice.name)
     print("Amount:", invoice_amount)
     print("Income Account:", income_account)
+    print("VAT:", "5%")
     print("==========================================")
 
     return {
