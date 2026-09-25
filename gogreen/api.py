@@ -2,6 +2,7 @@ import frappe
 from twilio.rest import Client
 import frappe
 import json
+import requests
 from frappe.utils import getdate
 from frappe import _
 from frappe.utils import flt, today
@@ -6609,7 +6610,7 @@ def create_single_payment_collection_link(
         }
         
 @frappe.whitelist(allow_guest=True)
-def new_payment_stripe_webhook():
+def new_without_payment_stripe_webhook():
 
     original_user = frappe.session.user
 
@@ -7024,6 +7025,12 @@ def new_payment_stripe_webhook():
             customer = invoice.customer
 
             company = invoice.company
+            greatgrandparent_name=invoice.greatgrandparent_name
+            grandparent_name=invoice.grandparent_name
+            parent_name=invoice.parent_name
+            cluster=invoice.cluster
+            tower=invoice.tower
+            
 
             # -------------------------------------
             # Create Payment Entry
@@ -7039,6 +7046,21 @@ def new_payment_stripe_webhook():
 
                 "company":
                     company,
+                    
+                    "greatgrandparent_name":
+                    greatgrandparent_name,
+                    
+                    "grandparent_name":
+                    grandparent_name,
+                    
+                    "parent_name":
+                    parent_name,
+                    
+                    "cluster":
+                    cluster,
+                    
+                    "tower":
+                    tower,
 
                 "party_type":
                     "Customer",
@@ -7865,3 +7887,757 @@ def create_partial_sales_invoice(
             invoice.name
         )
     }
+    
+@frappe.whitelist(allow_guest=True)
+def new_payment_stripe_webhook():
+
+    original_user = frappe.session.user
+
+    try:
+
+        # -----------------------------------------
+        # Get Stripe Payload
+        # -----------------------------------------
+
+        payload = frappe.request.get_json()
+
+        if not payload:
+            frappe.throw("Empty Stripe payload")
+
+        event_type = payload.get("type")
+
+        data = payload.get("data") or {}
+        stripe_data = data.get("object") or {}
+
+        # -----------------------------------------
+        # Only Process Successful Payment Intent
+        # -----------------------------------------
+
+        if event_type != "payment_intent.succeeded":
+
+            return {
+                "success": True,
+                "message": f"Event {event_type} ignored"
+            }
+
+        # -----------------------------------------
+        # Stripe Payment Intent ID
+        # -----------------------------------------
+
+        stripe_payment_id = stripe_data.get("id")
+
+        if not stripe_payment_id:
+            frappe.throw(
+                "Stripe Payment Intent ID not found"
+            )
+
+        # -----------------------------------------
+        # Check Payment Status
+        # -----------------------------------------
+
+        if stripe_data.get("status") != "succeeded":
+
+            frappe.throw(
+                "Stripe payment is not successful"
+            )
+
+        # -----------------------------------------
+        # Get Payment Collection ID
+        # -----------------------------------------
+
+        metadata = stripe_data.get("metadata") or {}
+
+        payment_collection_id = metadata.get(
+            "payment_collection"
+        )
+
+        if not payment_collection_id:
+
+            frappe.throw(
+                "Payment Collection ID not found in Stripe metadata"
+            )
+
+        # -----------------------------------------
+        # Switch to Administrator
+        # -----------------------------------------
+
+        frappe.set_user("Administrator")
+
+        # -----------------------------------------
+        # Get Payment Collection
+        # -----------------------------------------
+
+        if not frappe.db.exists(
+            "Payment Collection",
+            payment_collection_id
+        ):
+
+            frappe.throw(
+                f"Payment Collection "
+                f"{payment_collection_id} does not exist"
+            )
+
+        payment_collection = frappe.get_doc(
+            "Payment Collection",
+            payment_collection_id
+        )
+
+        # -----------------------------------------
+        # Get Stripe Payment Link ID
+        # -----------------------------------------
+
+        stripe_payment_link_id = (
+            payment_collection.stripe_payment_link_id
+        )
+
+        # -----------------------------------------
+        # Stripe Amount
+        # -----------------------------------------
+
+        stripe_amount = (
+            stripe_data.get("amount_received")
+            or stripe_data.get("amount")
+            or 0
+        )
+
+        stripe_payment_amount = (
+            float(stripe_amount) / 100
+        )
+
+        if stripe_payment_amount <= 0:
+
+            frappe.throw(
+                "Stripe payment amount is zero"
+            )
+
+        # -----------------------------------------
+        # Stripe Currency
+        # -----------------------------------------
+
+        stripe_currency = (
+            stripe_data.get("currency") or ""
+        ).upper()
+
+        # -----------------------------------------
+        # Find Child Table Automatically
+        # -----------------------------------------
+
+        meta = frappe.get_meta("Payment Collection")
+
+        child_table_field = None
+        child_doctype = None
+
+        for field in meta.fields:
+
+            if field.fieldtype != "Table":
+                continue
+
+            if not field.options:
+                continue
+
+            child_meta = frappe.get_meta(
+                field.options
+            )
+
+            has_sales_invoice = False
+            has_amount = False
+
+            for child_field in child_meta.fields:
+
+                if child_field.fieldname == "sales_invoice":
+                    has_sales_invoice = True
+
+                if child_field.fieldname == "amount":
+                    has_amount = True
+
+            if has_sales_invoice and has_amount:
+
+                child_table_field = field.fieldname
+                child_doctype = field.options
+
+                break
+
+        if not child_table_field:
+
+            frappe.throw(
+                "Could not find Payment Collection child table "
+                "containing sales_invoice and amount fields"
+            )
+
+        # -----------------------------------------
+        # Get Invoice Rows
+        # -----------------------------------------
+
+        invoice_rows = getattr(
+            payment_collection,
+            child_table_field
+        ) or []
+
+        if not invoice_rows:
+
+            frappe.throw(
+                f"No Sales Invoices found in "
+                f"Payment Collection "
+                f"{payment_collection_id}"
+            )
+
+        # -----------------------------------------
+        # Calculate Total Collection Amount
+        # -----------------------------------------
+
+        total_collection_amount = 0
+
+        for row in invoice_rows:
+
+            row_amount = float(
+                row.amount or 0
+            )
+
+            if row_amount > 0:
+
+                total_collection_amount += row_amount
+
+        # -----------------------------------------
+        # Validate Stripe Amount
+        # -----------------------------------------
+
+        if round(
+            stripe_payment_amount,
+            2
+        ) != round(
+            total_collection_amount,
+            2
+        ):
+
+            frappe.throw(
+                f"Payment amount mismatch. "
+                f"Stripe: {stripe_payment_amount}, "
+                f"Payment Collection: "
+                f"{total_collection_amount}"
+            )
+
+        # -----------------------------------------
+        # Results
+        # -----------------------------------------
+
+        created_payment_entries = []
+
+        skipped_payment_entries = []
+
+        # -----------------------------------------
+        # Process Each Invoice
+        # -----------------------------------------
+
+        for row in invoice_rows:
+
+            invoice_name = row.sales_invoice
+
+            row_amount = float(
+                row.amount or 0
+            )
+
+            if not invoice_name:
+                continue
+
+            if row_amount <= 0:
+                continue
+
+            # -------------------------------------
+            # Sales Invoice Exists
+            # -------------------------------------
+
+            if not frappe.db.exists(
+                "Sales Invoice",
+                invoice_name
+            ):
+
+                frappe.throw(
+                    f"Sales Invoice "
+                    f"{invoice_name} does not exist"
+                )
+
+            invoice = frappe.get_doc(
+                "Sales Invoice",
+                invoice_name
+            )
+
+            # -------------------------------------
+            # Invoice Submitted
+            # -------------------------------------
+
+            if invoice.docstatus != 1:
+
+                frappe.throw(
+                    f"Sales Invoice "
+                    f"{invoice_name} is not submitted"
+                )
+
+            # -------------------------------------
+            # Currency Check
+            # -------------------------------------
+
+            invoice_currency = (
+                invoice.currency or ""
+            ).upper()
+
+            if stripe_currency != invoice_currency:
+
+                frappe.throw(
+                    f"Currency mismatch for "
+                    f"{invoice.name}. "
+                    f"Stripe: {stripe_currency}, "
+                    f"Invoice: {invoice_currency}"
+                )
+
+            # -------------------------------------
+            # Outstanding Amount
+            # -------------------------------------
+
+            outstanding_amount = float(
+                invoice.outstanding_amount or 0
+            )
+
+            # -------------------------------------
+            # Already Paid
+            # -------------------------------------
+
+            if outstanding_amount <= 0:
+
+                skipped_payment_entries.append({
+
+                    "sales_invoice":
+                        invoice.name,
+
+                    "reason":
+                        "Invoice is already fully paid",
+
+                    "amount":
+                        row_amount
+
+                })
+
+                continue
+
+            # -------------------------------------
+            # Do Not Allocate More Than Outstanding
+            # -------------------------------------
+
+            if row_amount > outstanding_amount:
+
+                frappe.throw(
+                    f"Payment Collection amount "
+                    f"{row_amount} is greater than "
+                    f"outstanding amount "
+                    f"{outstanding_amount} for "
+                    f"{invoice.name}"
+                )
+
+            # -------------------------------------
+            # Check Duplicate
+            # -------------------------------------
+
+            existing_payment = frappe.db.sql(
+                """
+                SELECT
+                    pe.name
+                FROM `tabPayment Entry` pe
+                INNER JOIN `tabPayment Entry Reference` per
+                    ON per.parent = pe.name
+                WHERE
+                    pe.reference_no = %s
+                    AND per.reference_doctype =
+                        'Sales Invoice'
+                    AND per.reference_name = %s
+                    AND pe.docstatus = 1
+                LIMIT 1
+                """,
+                (
+                    stripe_payment_id,
+                    invoice.name
+                ),
+                as_dict=True
+            )
+
+            if existing_payment:
+
+                skipped_payment_entries.append({
+
+                    "sales_invoice":
+                        invoice.name,
+
+                    "payment_entry":
+                        existing_payment[0].name,
+
+                    "reason":
+                        "Payment Entry already exists",
+
+                    "amount":
+                        row_amount
+
+                })
+
+                continue
+
+            # -------------------------------------
+            # Customer / Company
+            # -------------------------------------
+
+            customer = invoice.customer
+
+            company = invoice.company
+
+            # -------------------------------------
+            # Invoice Custom Fields
+            # -------------------------------------
+
+            greatgrandparent_name = (
+                invoice.greatgrandparent_name
+            )
+
+            grandparent_name = (
+                invoice.grandparent_name
+            )
+
+            parent_name = (
+                invoice.parent_name
+            )
+
+            cluster = (
+                invoice.cluster
+            )
+
+            tower = (
+                invoice.tower
+            )
+
+            # -------------------------------------
+            # Create Payment Entry
+            # -------------------------------------
+
+            payment = frappe.get_doc({
+
+                "doctype":
+                    "Payment Entry",
+
+                "payment_type":
+                    "Receive",
+
+                "company":
+                    company,
+
+                "greatgrandparent_name":
+                    greatgrandparent_name,
+
+                "grandparent_name":
+                    grandparent_name,
+
+                "parent_name":
+                    parent_name,
+
+                "cluster":
+                    cluster,
+
+                "tower":
+                    tower,
+
+                "party_type":
+                    "Customer",
+
+                "party":
+                    customer,
+
+                "mode_of_payment":
+                    "Stripe",
+
+                "paid_amount":
+                    row_amount,
+
+                "received_amount":
+                    row_amount,
+
+                "reference_no":
+                    stripe_payment_id,
+
+                "reference_date":
+                    today(),
+
+                "references": [
+                    {
+                        "reference_doctype":
+                            "Sales Invoice",
+
+                        "reference_name":
+                            invoice.name,
+
+                        "allocated_amount":
+                            row_amount
+                    }
+                ]
+
+            })
+
+            # -------------------------------------
+            # Exchange Rate
+            # -------------------------------------
+
+            payment.target_exchange_rate = 1
+
+            payment.source_exchange_rate = 1
+
+            # -------------------------------------
+            # Paid To
+            # -------------------------------------
+
+            payment.paid_to = (
+                "Bank of Baroda- Go Green - GG"
+            )
+
+            # -------------------------------------
+            # Paid From
+            # -------------------------------------
+
+            payment.paid_from = invoice.debit_to
+
+            # -------------------------------------
+            # Insert
+            # -------------------------------------
+
+            payment.insert(
+                ignore_permissions=True
+            )
+
+            # -------------------------------------
+            # Submit
+            # -------------------------------------
+
+            payment.submit()
+
+            # -------------------------------------
+            # Add Result
+            # -------------------------------------
+
+            created_payment_entries.append({
+
+                "payment_entry":
+                    payment.name,
+
+                "sales_invoice":
+                    invoice.name,
+
+                "customer":
+                    customer,
+
+                "amount":
+                    row_amount,
+
+                "currency":
+                    stripe_currency
+
+            })
+
+        # =================================================
+        # COMMIT PAYMENT ENTRIES FIRST
+        # =================================================
+
+        frappe.db.commit()
+
+        # =================================================
+        # DEACTIVATE STRIPE PAYMENT LINK
+        # =================================================
+
+        stripe_payment_link_deactivated = False
+
+        if stripe_payment_link_id:
+
+            try:
+
+                # -----------------------------------------
+                # Get Stripe Secret Key
+                # -----------------------------------------
+
+                stripe_secret_key = frappe.conf.get(
+                    "stripe_secret_key"
+                )
+
+                if not stripe_secret_key:
+
+                    frappe.throw(
+                        "Stripe secret key is not configured"
+                    )
+
+                # -----------------------------------------
+                # Deactivate Stripe Payment Link
+                # -----------------------------------------
+
+                response = requests.post(
+
+                    f"https://api.stripe.com/v1/payment_links/"
+                    f"{stripe_payment_link_id}",
+
+                    headers={
+                        "Authorization":
+                            f"Bearer {stripe_secret_key}"
+                    },
+
+                    data={
+                        "active": "false"
+                    },
+
+                    timeout=30
+
+                )
+
+                # -----------------------------------------
+                # Check Stripe Response
+                # -----------------------------------------
+
+                if response.status_code != 200:
+
+                    frappe.log_error(
+                        response.text,
+                        "Stripe Payment Link Deactivation Failed"
+                    )
+
+                else:
+
+                    stripe_result = response.json()
+
+                    if stripe_result.get("active") is False:
+
+                        stripe_payment_link_deactivated = True
+
+                    else:
+
+                        frappe.log_error(
+                            str(stripe_result),
+                            "Stripe Payment Link "
+                            "Deactivation Unexpected Response"
+                        )
+
+            except Exception:
+
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    "Stripe Payment Link Deactivation Error"
+                )
+
+        # =================================================
+        # UPDATE PAYMENT COLLECTION
+        # =================================================
+
+        if stripe_payment_link_deactivated:
+
+            # -----------------------------------------
+            # Optional: Mark Link Inactive
+            # -----------------------------------------
+
+            if frappe.get_meta(
+                "Payment Collection"
+            ).has_field(
+                "stripe_payment_link_active"
+            ):
+
+                payment_collection.db_set(
+                    "stripe_payment_link_active",
+                    0
+                )
+
+            # -----------------------------------------
+            # Optional: Mark Payment Status Paid
+            # -----------------------------------------
+
+            if frappe.get_meta(
+                "Payment Collection"
+            ).has_field(
+                "payment_status"
+            ):
+
+                payment_collection.db_set(
+                    "payment_status",
+                    "Paid"
+                )
+
+        # =================================================
+        # FINAL RESPONSE
+        # =================================================
+
+        return {
+
+            "success":
+                True,
+
+            "message":
+                "Payment Entries created successfully",
+
+            "payment_collection":
+                payment_collection_id,
+
+            "stripe_payment_id":
+                stripe_payment_id,
+
+            "stripe_payment_link_id":
+                stripe_payment_link_id,
+
+            "stripe_payment_link_deactivated":
+                stripe_payment_link_deactivated,
+
+            "stripe_amount":
+                stripe_payment_amount,
+
+            "currency":
+                stripe_currency,
+
+            "total_collection_amount":
+                total_collection_amount,
+
+            "payment_entries":
+                created_payment_entries,
+
+            "skipped":
+                skipped_payment_entries
+
+        }
+
+    except Exception as e:
+
+        # -----------------------------------------
+        # Rollback
+        # -----------------------------------------
+
+        frappe.db.rollback()
+
+        # -----------------------------------------
+        # Log Error
+        # -----------------------------------------
+
+        error = frappe.get_traceback()
+
+        frappe.log_error(
+            error,
+            "Stripe Payment Collection Error"
+        )
+
+        # -----------------------------------------
+        # Return Error
+        # -----------------------------------------
+
+        return {
+
+            "success":
+                False,
+
+            "error":
+                str(e),
+
+            "traceback":
+                error
+
+        }
+
+    finally:
+
+        # -----------------------------------------
+        # Restore Original User
+        # -----------------------------------------
+
+        frappe.set_user(original_user)
