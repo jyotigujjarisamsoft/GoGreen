@@ -1896,6 +1896,12 @@ def create_monthly_sales_invoices_background(docname):
                     "Downtown":
                         "Sales-Downtown - GG",
 
+		    "Golden Miles":
+		        "Sales-Golden Miles - GG",
+		        
+		    "Shoreline Apartments":
+		        "Sales-Shoreline Apartments - GG",
+
                     "Dubai Hills":
                         "Sales-Dubai Hills - GG",
 
@@ -4583,6 +4589,13 @@ def create_partial_invoice_and_payment(customer_name):
 
             "Downtown":
                 "Sales-Downtown - GG",
+                
+	     "Golden Miles":
+		"Sales-Golden Miles - GG",
+
+	      "Shoreline Apartments":
+		"Sales-Shoreline Apartments - GG",
+
 
             "Dubai Hills":
                 "Sales-Dubai Hills - GG",
@@ -7489,6 +7502,12 @@ def create_partial_sales_invoice(
 
         "Downtown":
             "Sales-Downtown - GG",
+            
+        "Golden Miles":
+	     "Sales-Golden Miles - GG",
+		        
+         "Shoreline Apartments":
+	      "Sales-Shoreline Apartments - GG",
 
         "Dubai Hills":
             "Sales-Dubai Hills - GG",
