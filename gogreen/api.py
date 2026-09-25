@@ -8,6 +8,7 @@ from frappe import _
 from frappe.utils import flt, today
 from frappe.utils import get_first_day, get_last_day, getdate
 
+
 @frappe.whitelist(allow_guest=True)
 def create_or_update_customer():
     try:
@@ -1768,10 +1769,9 @@ def create_monthly_sales_invoices_background(docname):
             "Customer",
 
             filters={
-        "custom_customer_typee": doc.customer_type,
-        "custom_status": "Active"
-    },
-
+                "custom_customer_typee": doc.customer_type,
+                "custom_status": "Active"
+            },
 
             fields=[
                 "name",
@@ -1840,13 +1840,38 @@ def create_monthly_sales_invoices_background(docname):
                 # CHECK EXISTING SALES INVOICE
                 # =========================================
 
+                # -----------------------------------------
+                # GET MONTH START AND MONTH END
+                # -----------------------------------------
+
+                month_start = frappe.utils.get_first_day(
+                    doc.date
+                )
+
+                month_end = frappe.utils.get_last_day(
+                    doc.date
+                )
+
+                print(
+                    f"Checking duplicate invoice for month: "
+                    f"{month_start} to {month_end}"
+                )
+
+                # -----------------------------------------
+                # CHECK CUSTOMER + BILLED PERIOD
+                # + SAME POSTING MONTH
+                # -----------------------------------------
+
                 existing_invoice = frappe.db.exists(
                     "Sales Invoice",
                     {
                         "customer": customer.name,
 
-                        "custom_billed_period":
-                            doc.billed_period,
+                        "posting_date":
+                            ["between", [
+                                month_start,
+                                month_end
+                            ]],
 
                         "docstatus":
                             ["!=", 2]
@@ -1858,6 +1883,11 @@ def create_monthly_sales_invoices_background(docname):
                     print(
                         "Invoice already exists:",
                         existing_invoice
+                    )
+
+                    print(
+                        f"Duplicate month: "
+                        f"{month_start} to {month_end}"
                     )
 
                     skipped += 1
@@ -1897,11 +1927,11 @@ def create_monthly_sales_invoices_background(docname):
                     "Downtown":
                         "Sales-Downtown - GG",
 
-		    "Golden Miles":
-		        "Sales-Golden Miles - GG",
-		        
-		    "Shoreline Apartments":
-		        "Sales-Shoreline Apartments - GG",
+                    "Golden Miles":
+                        "Sales-Golden Miles - GG",
+
+                    "Shoreline Apartments":
+                        "Sales-Shoreline Apartments - GG",
 
                     "Dubai Hills":
                         "Sales-Dubai Hills - GG",
@@ -1966,12 +1996,14 @@ def create_monthly_sales_invoices_background(docname):
                 # -----------------------------------------
 
                 si.customer = customer.name
+                si.set_posting_time = 1
 
                 # -----------------------------------------
                 # POSTING DATE
                 # -----------------------------------------
 
                 si.posting_date = doc.date
+                si.due_date = doc.date
 
                 # =========================================
                 # CUSTOM FIELDS
@@ -2127,7 +2159,10 @@ def create_monthly_sales_invoices_background(docname):
                 # COMMIT THIS INVOICE
                 # =========================================
 
+                #frappe.db.commit()
+                si.submit()
                 frappe.db.commit()
+                
 
                 created += 1
 
@@ -2214,9 +2249,11 @@ def create_monthly_sales_invoices_background(docname):
 
         print("")
         print("=" * 100)
+
         print(
             "MONTHLY SALES INVOICE CREATION COMPLETED"
         )
+
         print("=" * 100)
 
         print(
