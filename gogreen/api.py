@@ -5119,7 +5119,8 @@ def create_payment_collections_background(
         "Sales Invoice",
         filters={
             "posting_date": ["between", [from_date, to_date]],
-            "docstatus": 1
+            "docstatus": 1,
+            "outstanding_amount": [">", 0]
         },
         fields=[
             "name",
