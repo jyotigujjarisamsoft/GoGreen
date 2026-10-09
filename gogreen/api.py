@@ -9226,4 +9226,211 @@ def new_create_partial_invoice_and_payment(customer_name):
             original_user
         )
 
+import frappe
+import requests
 
+from frappe.utils import flt
+
+
+@frappe.whitelist()
+def create_single_payment_link_for_requested_customer(customer_name, payment_collection):
+
+    # --------------------------------------------------
+    # 1. Validate the Payment Collection document
+    # --------------------------------------------------
+
+    if not frappe.has_permission(
+        "Payment Collection",
+        "write",
+        payment_collection
+    ):
+        frappe.throw("You do not have permission to update this Payment Collection.")
+
+    doc = frappe.get_doc("Payment Collection", payment_collection)
+
+    # --------------------------------------------------
+    # 2. Prevent duplicate payment links
+    # --------------------------------------------------
+
+    if doc.stripe_payment_link:
+        return {
+            "payment_link": doc.stripe_payment_link,
+            "payment_link_id": doc.stripe_payment_link_id,
+            "message": "Payment Link already exists."
+        }
+
+    # --------------------------------------------------
+    # 3. Find the Sales Invoice Collection child table
+    # --------------------------------------------------
+
+    child_table_field = None
+
+    for field in doc.meta.fields:
+        if (
+            field.fieldtype == "Table"
+            and field.options == "Sales Invoice Collection"
+        ):
+            child_table_field = field.fieldname
+            break
+
+    if not child_table_field:
+        frappe.throw(
+            "Sales Invoice Collection child table was not found."
+        )
+
+    rows = doc.get(child_table_field) or []
+
+    if not rows:
+        frappe.throw(
+            "Please add at least one row to Sales Invoice Collection."
+        )
+
+    # --------------------------------------------------
+    # 4. Get Customer Name from the first child row
+    # --------------------------------------------------
+
+    first_row = rows[0]
+
+    first_customer = (
+        first_row.get("customer_name")
+        or first_row.get("customer")
+    )
+
+    if not first_customer:
+        frappe.throw(
+            "Customer Name is missing in the first child row."
+        )
+
+    if first_customer != customer_name:
+        frappe.throw(
+            "The supplied customer does not match the first child row."
+        )
+
+    # --------------------------------------------------
+    # 5. Validate amount
+    # --------------------------------------------------
+
+    amount = flt(doc.total_amount)
+
+    if amount <= 0:
+        frappe.throw("Total Amount must be greater than zero.")
+
+    # AED uses two decimal places.
+    amount_in_fils = int(round(amount * 100))
+
+    # --------------------------------------------------
+    # 6. Read Stripe secret key
+    # --------------------------------------------------
+
+    stripe_secret_key = frappe.conf.get("stripe_secret_key")
+
+    if not stripe_secret_key:
+        frappe.throw(
+            "Stripe secret key is missing from site configuration."
+        )
+
+    headers = {
+        "Authorization": f"Bearer {stripe_secret_key}"
+    }
+
+    timeout = 30
+
+    # --------------------------------------------------
+    # 7. Create a Stripe Product
+    # --------------------------------------------------
+
+    product_response = requests.post(
+        "https://api.stripe.com/v1/products",
+        headers=headers,
+        data={
+            "name": f"Go Green Service - {payment_collection}",
+            "metadata[payment_collection]": payment_collection,
+            "metadata[customer_name]": customer_name
+        },
+        timeout=timeout
+    )
+
+    if not product_response.ok:
+        frappe.log_error(
+            product_response.text,
+            "Stripe Product Creation Failed"
+        )
+        frappe.throw("Unable to create the Stripe Product.")
+
+    product = product_response.json()
+
+    # --------------------------------------------------
+    # 8. Create a Stripe Price
+    # --------------------------------------------------
+
+    price_response = requests.post(
+        "https://api.stripe.com/v1/prices",
+        headers=headers,
+        data={
+            "currency": "aed",
+            "unit_amount": amount_in_fils,
+            "product": product["id"]
+        },
+        timeout=timeout
+    )
+
+    if not price_response.ok:
+        frappe.log_error(
+            price_response.text,
+            "Stripe Price Creation Failed"
+        )
+        frappe.throw("Unable to create the Stripe Price.")
+
+    price = price_response.json()
+
+    # --------------------------------------------------
+    # 9. Create a Stripe Payment Link
+    # --------------------------------------------------
+
+    link_response = requests.post(
+        "https://api.stripe.com/v1/payment_links",
+        headers=headers,
+        data={
+            "line_items[0][price]": price["id"],
+            "line_items[0][quantity]": 1,
+
+            "metadata[payment_collection]": payment_collection,
+            "metadata[customer_name]": customer_name,
+
+            "payment_intent_data[metadata][payment_collection]":
+                payment_collection,
+
+            "payment_intent_data[metadata][customer_name]":
+                customer_name
+        },
+        timeout=timeout
+    )
+
+    if not link_response.ok:
+        frappe.log_error(
+            link_response.text,
+            "Stripe Payment Link Creation Failed"
+        )
+        frappe.throw("Unable to create the Stripe Payment Link.")
+
+    payment_link = link_response.json()
+
+    # --------------------------------------------------
+    # 10. Save Payment Link details in ERPNext
+    # --------------------------------------------------
+
+    doc.stripe_payment_link = payment_link["url"]
+    doc.stripe_payment_link_id = payment_link["id"]
+    doc.stripe_payment_status="Modified"
+
+    doc.save(ignore_permissions=True)
+
+    frappe.db.commit()
+
+    return {
+        "payment_link": payment_link["url"],
+        "payment_link_id": payment_link["id"],
+        "customer_name": customer_name,
+        "payment_collection": payment_collection,
+        "amount": amount
+    }
