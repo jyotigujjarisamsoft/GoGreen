@@ -10527,4 +10527,26 @@ def deactivate_payment_collection_links(from_date, to_date):
         "results": results
     }
     
-        
+import frappe
+
+
+@frappe.whitelist(allow_guest=True)
+def get_tower_details(tower):
+    if not tower:
+        return {}
+
+    tower_details = frappe.db.get_value(
+        "Tower",
+        tower,
+        [
+            "parent_name",
+            "cluster_name",
+            "grandparent_name"
+        ],
+        as_dict=True
+    )
+
+    if not tower_details:
+        return {}
+
+    return tower_details        
