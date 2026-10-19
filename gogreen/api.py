@@ -10378,11 +10378,7 @@ def create_single_payment_collection_link(
                 )
         }
         
- import frappe
-import requests
-from frappe.utils import getdate
-
-
+ 
 @frappe.whitelist()
 def deactivate_payment_collection_links(from_date, to_date):
 
