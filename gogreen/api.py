@@ -9345,10 +9345,14 @@ def create_single_payment_link_for_requested_customer(customer_name, payment_col
         "https://api.stripe.com/v1/products",
         headers=headers,
         data={
-            "name": f"Go Green Service - {payment_collection}",
-            "metadata[payment_collection]": payment_collection,
-            "metadata[customer_name]": customer_name
-        },
+        "name": f"Go Green Service - {customer_name}",
+        "description": (
+            f"Customer: {customer_name} | "
+            f"Payment Collection: {payment_collection}"
+        ),
+        "metadata[payment_collection]": payment_collection,
+        "metadata[customer_name]": customer_name
+    },
         timeout=timeout
     )
 
@@ -10202,62 +10206,67 @@ def create_single_payment_collection_link(
 
         data = {
 
-            # -----------------------------------------------------
-            # CURRENCY
-            # -----------------------------------------------------
+	    # -----------------------------------------------------
+	    # CURRENCY
+	    # -----------------------------------------------------
 
-            "line_items[0][price_data][currency]":
-                "aed",
+	    "line_items[0][price_data][currency]": "aed",
 
-            # -----------------------------------------------------
-            # PRODUCT NAME
-            # -----------------------------------------------------
+	    # -----------------------------------------------------
+	    # PRODUCT NAME
+	    # Displayed on Stripe Checkout
+	    # -----------------------------------------------------
 
-            "line_items[0][price_data][product_data][name]":
-                "Go Green Service",
+	    "line_items[0][price_data][product_data][name]":
+		f"Go Green Service - {customer_name}",
 
-            # -----------------------------------------------------
-            # AMOUNT
-            # -----------------------------------------------------
+	    # -----------------------------------------------------
+	    # PRODUCT DESCRIPTION
+	    # Display customer and payment collection details
+	    # -----------------------------------------------------
 
-            "line_items[0][price_data][unit_amount]":
-                str(amount_in_fils),
+	    "line_items[0][price_data][product_data][description]":
+		f"Customer: {customer_name} | Payment Collection: {payment_collection_name}",
 
-            # -----------------------------------------------------
-            # QUANTITY
-            # -----------------------------------------------------
+	    # -----------------------------------------------------
+	    # AMOUNT
+	    # -----------------------------------------------------
 
-            "line_items[0][quantity]":
-                "1",
+	    "line_items[0][price_data][unit_amount]":
+		str(amount_in_fils),
 
-            # -----------------------------------------------------
-            # AFTER PAYMENT
-            # -----------------------------------------------------
+	    # -----------------------------------------------------
+	    # QUANTITY
+	    # -----------------------------------------------------
 
-            "after_completion[type]":
-                "hosted_confirmation",
+	    "line_items[0][quantity]": "1",
 
-            # -----------------------------------------------------
-            # PAYMENT LINK METADATA
-            # -----------------------------------------------------
+	    # -----------------------------------------------------
+	    # AFTER PAYMENT
+	    # -----------------------------------------------------
 
-            "metadata[payment_collection]":
-                payment_collection_name,
+	    "after_completion[type]": "hosted_confirmation",
 
-            "metadata[customer_name]":
-                customer_name,
+	    # -----------------------------------------------------
+	    # PAYMENT LINK METADATA
+	    # -----------------------------------------------------
 
-            # -----------------------------------------------------
-            # PAYMENT INTENT METADATA
-            # -----------------------------------------------------
+	    "metadata[payment_collection]":
+		payment_collection_name,
 
-            "payment_intent_data[metadata][payment_collection]":
-                payment_collection_name,
+	    "metadata[customer_name]":
+		customer_name,
 
-            "payment_intent_data[metadata][customer_name]":
-                customer_name
-        }
+	    # -----------------------------------------------------
+	    # PAYMENT INTENT METADATA
+	    # -----------------------------------------------------
 
+	    "payment_intent_data[metadata][payment_collection]":
+		payment_collection_name,
+
+	    "payment_intent_data[metadata][customer_name]":
+		customer_name
+	}
         # ---------------------------------------------------------
         # CREATE PAYMENT LINK
         # ---------------------------------------------------------
