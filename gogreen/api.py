@@ -10795,16 +10795,78 @@ def latest_payment_stripe_webhook():
             }
 
             # -----------------------------------------
-            # Fetch Checkout Session Using Payment Intent
+            # Fetch PaymentIntent From Stripe
+            # -----------------------------------------
+
+            payment_intent_response = requests.get(
+                f"https://api.stripe.com/v1/payment_intents/"
+                f"{stripe_payment_id}",
+                headers=stripe_headers,
+                timeout=30
+            )
+
+            if payment_intent_response.status_code != 200:
+
+                frappe.throw(
+                    "Unable to fetch Stripe PaymentIntent: "
+                    + payment_intent_response.text
+                )
+
+            payment_intent_data = (
+                payment_intent_response.json()
+            )
+
+            # -----------------------------------------
+            # Verify PaymentIntent Status
+            # -----------------------------------------
+
+            if payment_intent_data.get("status") != "succeeded":
+
+                frappe.throw(
+                    "Stripe PaymentIntent is not successful"
+                )
+
+            # -----------------------------------------
+            # Get Checkout Session ID
+            # From payment_details.order_reference
+            # -----------------------------------------
+
+            payment_details = (
+                payment_intent_data.get("payment_details")
+                or {}
+            )
+
+            checkout_session_id = (
+                payment_details.get("order_reference")
+            )
+
+            print(
+                "Stripe PaymentIntent:",
+                stripe_payment_id
+            )
+
+            print(
+                "Checkout Session ID:",
+                checkout_session_id
+            )
+
+            if not checkout_session_id:
+
+                frappe.throw(
+                    "Checkout Session ID not found in "
+                    "PaymentIntent payment_details.order_reference. "
+                    "Verify the Stripe account, API mode, and "
+                    "PaymentIntent response."
+                )
+
+            # -----------------------------------------
+            # Fetch Checkout Session Directly
             # -----------------------------------------
 
             session_response = requests.get(
-                "https://api.stripe.com/v1/checkout/sessions",
+                "https://api.stripe.com/v1/checkout/sessions/"
+                + checkout_session_id,
                 headers=stripe_headers,
-                params={
-                    "payment_intent": stripe_payment_id,
-                    "limit": 1
-                },
                 timeout=30
             )
 
@@ -10815,22 +10877,38 @@ def latest_payment_stripe_webhook():
                     + session_response.text
                 )
 
-            sessions = (
-                session_response.json().get("data") or []
-            )
+            session = session_response.json()
 
-            if not sessions:
+            # -----------------------------------------
+            # Verify Session Belongs To PaymentIntent
+            # -----------------------------------------
+
+            if session.get("payment_intent") != stripe_payment_id:
 
                 frappe.throw(
-                    "No Checkout Session found for Payment Intent "
-                    + stripe_payment_id
+                    "Checkout Session PaymentIntent does not "
+                    "match the webhook PaymentIntent ID"
+                )
+
+            # -----------------------------------------
+            # Verify Checkout Session Status
+            # -----------------------------------------
+
+            if session.get("status") != "complete":
+
+                frappe.throw(
+                    "Stripe Checkout Session is not complete"
+                )
+
+            if session.get("payment_status") != "paid":
+
+                frappe.throw(
+                    "Stripe Checkout Session payment is not paid"
                 )
 
             # -----------------------------------------
             # Get Phone Number From customer_details.phone
             # -----------------------------------------
-
-            session = sessions[0]
 
             customer_details = (
                 session.get("customer_details") or {}
@@ -11037,8 +11115,7 @@ def latest_payment_stripe_webhook():
 
             return {
 
-                "success":
-                    True,
+                "success": True,
 
                 "message":
                     "Payment Entry reference number updated successfully",
