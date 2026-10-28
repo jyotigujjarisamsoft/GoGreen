@@ -4489,7 +4489,7 @@ from frappe.utils import (
 )
 
 @frappe.whitelist(allow_guest=True)
-def create_partial_invoice_and_payment(customer_name):
+def old_create_partial_invoice_and_payment(customer_name):
     """
     Create partial Sales Invoice and Payment Entry
     for a customer created from the 105 AED Customer Web Form.
@@ -8685,548 +8685,7 @@ def new_payment_stripe_webhook():
         frappe.set_user(original_user)
         
 
-@frappe.whitelist(allow_guest=True)
-def new_create_partial_invoice_and_payment(customer_name):
-    """
-    Create partial Sales Invoice and Stripe Payment Link
-    for a customer created from the 105 AED Customer Web Form.
 
-    Guest user -> temporarily switch to Administrator.
-
-    Payment Entry is NOT created here.
-    Payment Entry will be created from the Stripe webhook
-    after successful payment.
-    """
-
-    # ---------------------------------------------------------
-    # SAVE CURRENT USER
-    # ---------------------------------------------------------
-
-    original_user = frappe.session.user
-
-    try:
-
-        # ---------------------------------------------------------
-        # SWITCH TO ADMINISTRATOR
-        # ---------------------------------------------------------
-
-        frappe.set_user("Administrator")
-
-        print(
-            "Original User:",
-            original_user
-        )
-
-        print(
-            "Current User:",
-            frappe.session.user
-        )
-
-        # ---------------------------------------------------------
-        # GET CUSTOMER
-        # ---------------------------------------------------------
-
-        if not customer_name:
-            frappe.throw(
-                "Customer name is required"
-            )
-
-        customer = frappe.get_doc(
-            "Customer",
-            customer_name
-        )
-
-        # ---------------------------------------------------------
-        # GET MONTHLY RATE
-        # ---------------------------------------------------------
-
-        monthly_rate = float(
-            customer.get("custom_rate") or 0
-        )
-
-        if monthly_rate <= 0:
-            frappe.throw(
-                "Customer Rate must be greater than 0"
-            )
-
-        monthly_rate = round(
-            monthly_rate,
-            2
-        )
-
-        # ---------------------------------------------------------
-        # GET PARTIAL START DATE
-        # ---------------------------------------------------------
-
-        partial_start_date = customer.get(
-            "custom_partial_start_date"
-        )
-
-        if not partial_start_date:
-            frappe.throw(
-                "Partial Start Date is required"
-            )
-
-        partial_start_date = getdate(
-            partial_start_date
-        )
-
-        # ---------------------------------------------------------
-        # GET START DAY
-        # ---------------------------------------------------------
-
-        start_day = partial_start_date.day
-
-        # ---------------------------------------------------------
-        # CALCULATE PARTIAL INVOICE
-        # ---------------------------------------------------------
-
-        if 1 <= start_day <= 9:
-
-            billing_divisor = 1
-            billing_period = "Full"
-            invoice_amount = monthly_rate
-
-        elif 10 <= start_day <= 20:
-
-            billing_divisor = 2
-            billing_period = "Half"
-            invoice_amount = monthly_rate / 2
-
-        elif 21 <= start_day <= 25:
-
-            billing_divisor = 3
-            billing_period = "One Third"
-            invoice_amount = monthly_rate / 3
-
-        else:
-
-            frappe.throw(
-                "Partial Start Date from 26th to 31st "
-                "is not currently supported."
-            )
-
-        invoice_amount = round(
-            invoice_amount,
-            2
-        )
-
-        # ---------------------------------------------------------
-        # GET GREAT GRANDPARENT
-        # ---------------------------------------------------------
-
-        greatgrandparent_name = customer.get(
-            "custom_greatgrandparent_name"
-        )
-
-        # ---------------------------------------------------------
-        # INCOME ACCOUNT
-        # ---------------------------------------------------------
-
-        income_account_map = {
-
-            "Downtown":
-                "Sales-Downtown - GG",
-
-            "Golden Miles":
-                "Sales-Golden Miles - GG",
-
-            "Shoreline Apartments":
-                "Sales-Shoreline Apartments - GG",
-
-            "Dubai Hills":
-                "Sales-Dubai Hills - GG",
-
-            "JLT":
-                "Sales-JLT - GG",
-
-            "Palm Jumeirah":
-                "Sales-Palm Jumeirah - GG",
-
-            "Creek Harbour":
-                "Sales-Creek Harbour - GG"
-        }
-
-        income_account = income_account_map.get(
-            greatgrandparent_name,
-            "Temporary Opening - GG"
-        )
-
-        # ---------------------------------------------------------
-        # PREVENT DUPLICATE INVOICE
-        # ---------------------------------------------------------
-
-        existing_invoice = frappe.db.exists(
-            "Sales Invoice",
-            {
-                "customer": customer.name,
-                "posting_date": partial_start_date,
-                "custom_partial_start_date":
-                    partial_start_date
-            }
-        )
-
-        if existing_invoice:
-
-            frappe.throw(
-                f"Sales Invoice {existing_invoice} already exists "
-                f"for this customer and start date."
-            )
-
-        # ---------------------------------------------------------
-        # CREATE SALES INVOICE
-        # ---------------------------------------------------------
-
-        invoice = frappe.new_doc(
-            "Sales Invoice"
-        )
-
-        invoice.customer = customer.name
-        invoice.set_posting_time = 1
-
-        invoice.posting_date = (
-            partial_start_date
-        )
-
-        invoice.due_date = (
-            partial_start_date
-        )
-
-        # ---------------------------------------------------------
-        # CUSTOM PARTIAL START DATE
-        # ---------------------------------------------------------
-
-        if invoice.meta.has_field(
-            "custom_partial_start_date"
-        ):
-
-            invoice.custom_partial_start_date = (
-                partial_start_date
-            )
-
-        # ---------------------------------------------------------
-        # ITEM
-        # ---------------------------------------------------------
-
-        invoice.append(
-            "items",
-            {
-                "item_code":
-                    "Go Green service",
-
-                "qty":
-                    1,
-
-                "rate":
-                    invoice_amount,
-
-                "income_account":
-                    income_account
-            }
-        )
-
-        # ---------------------------------------------------------
-        # VAT 5% INCLUDED
-        # ---------------------------------------------------------
-
-        invoice.append(
-            "taxes",
-            {
-                "charge_type":
-                    "On Net Total",
-
-                "account_head":
-                    "VAT 5% - GG",
-
-                "description":
-                    "VAT 5% Included",
-
-                "rate":
-                    5,
-
-                "included_in_print_rate":
-                    1
-            }
-        )
-
-        # ---------------------------------------------------------
-        # INSERT INVOICE
-        # ---------------------------------------------------------
-
-        invoice.insert(
-            ignore_permissions=True
-        )
-
-        # ---------------------------------------------------------
-        # SUBMIT INVOICE
-        # ---------------------------------------------------------
-
-        invoice.flags.ignore_permissions = True
-
-        invoice.submit()
-
-        print(
-            "Sales Invoice Submitted:",
-            invoice.name
-        )
-
-        # ---------------------------------------------------------
-        # CREATE STRIPE PAYMENT LINK
-        # ---------------------------------------------------------
-
-        import requests
-
-        stripe_secret_key = frappe.conf.get(
-            "stripe_secret_key"
-        )
-
-        if not stripe_secret_key:
-            frappe.throw(
-                "Stripe secret key is not configured."
-            )
-
-        # ---------------------------------------------------------
-        # STRIPE AMOUNT
-        # ---------------------------------------------------------
-        # Stripe expects the amount in fils for AED.
-        # Use invoice.grand_total because the invoice amount
-        # is VAT-inclusive.
-        # ---------------------------------------------------------
-
-        stripe_amount = int(
-            round(
-                float(invoice.grand_total) * 100
-            )
-        )
-
-        # ---------------------------------------------------------
-        # CREATE STRIPE PAYMENT LINK
-        # ---------------------------------------------------------
-
-        stripe_url = (
-            "https://api.stripe.com/v1/payment_links"
-        )
-
-        headers = {
-            "Authorization":
-                f"Bearer {stripe_secret_key}"
-        }
-
-        stripe_data = {
-
-            "line_items[0][price_data][currency]":
-                "aed",
-
-            "line_items[0][price_data][product_data][name]":
-                "Go Green Service",
-
-            "line_items[0][price_data][unit_amount]":
-                stripe_amount,
-
-            "line_items[0][quantity]":
-                1,
-
-            # -------------------------------------------------
-            # PAYMENT INTENT METADATA
-            # -------------------------------------------------
-
-            "payment_intent_data[metadata][sales_invoice_no]":
-                invoice.name,
-
-            "payment_intent_data[metadata][customer]":
-                customer.name,
-
-            # -------------------------------------------------
-            # OPTIONAL TOP-LEVEL METADATA
-            # -------------------------------------------------
-
-            "metadata[sales_invoice_no]":
-                invoice.name,
-
-            "metadata[customer]":
-                customer.name,
-
-            # -------------------------------------------------
-            # AFTER PAYMENT
-            # -------------------------------------------------
-
-            "after_completion[type]":
-                "hosted_confirmation",
-
-            "after_completion[hosted_confirmation][custom_message]":
-                "Payment successful. Thank you."
-        }
-
-        stripe_response = requests.post(
-            stripe_url,
-            headers=headers,
-            data=stripe_data,
-            timeout=15
-        )
-
-        print(
-            "Stripe Response Status:",
-            stripe_response.status_code
-        )
-
-        print(
-            "Stripe Response:",
-            stripe_response.text
-        )
-
-        if not stripe_response.ok:
-
-            # -------------------------------------------------
-            # DELETE / CANCEL INVOICE IF STRIPE CREATION FAILS
-            # -------------------------------------------------
-
-            frappe.log_error(
-                stripe_response.text,
-                "Stripe Payment Link Creation Failed"
-            )
-
-            frappe.throw(
-                "Unable to create Stripe Payment Link."
-            )
-
-        stripe_result = (
-            stripe_response.json()
-        )
-
-        payment_link = stripe_result.get(
-            "url"
-        )
-
-        payment_link_id = stripe_result.get(
-            "id"
-        )
-
-        if not payment_link:
-
-            frappe.throw(
-                "Stripe did not return a Payment Link."
-            )
-
-        print(
-            "Stripe Payment Link:",
-            payment_link
-        )
-
-        print(
-            "Stripe Payment Link ID:",
-            payment_link_id
-        )
-
-        # ---------------------------------------------------------
-        # STORE PAYMENT LINK IN SALES INVOICE
-        # ---------------------------------------------------------
-
-        if invoice.meta.has_field(
-            "custom_payment_link"
-        ):
-
-            invoice.db_set(
-                "custom_payment_link",
-                payment_link
-            )
-
-        # ---------------------------------------------------------
-        # STORE PAYMENT LINK ID IF FIELD EXISTS
-        # ---------------------------------------------------------
-
-        if invoice.meta.has_field(
-            "custom_stripe_payment_link_id"
-        ):
-
-            invoice.db_set(
-                "custom_stripe_payment_link_id",
-                payment_link_id
-            )
-
-        # ---------------------------------------------------------
-        # COMMIT
-        # ---------------------------------------------------------
-
-        frappe.db.commit()
-
-        # ---------------------------------------------------------
-        # RETURN RESULT
-        # ---------------------------------------------------------
-
-        return {
-
-            "success":
-                True,
-
-            "customer":
-                customer.name,
-
-            "partial_start_date":
-                str(partial_start_date),
-
-            "partial_start_day":
-                start_day,
-
-            "billing_period":
-                billing_period,
-
-            "billing_divisor":
-                billing_divisor,
-
-            "monthly_rate":
-                monthly_rate,
-
-            "vat_inclusive":
-                True,
-
-            "vat_rate":
-                5,
-
-            "invoice_gross_amount":
-                invoice_amount,
-
-            "invoice_net_amount":
-                invoice.net_total,
-
-            "invoice_vat_amount":
-                invoice.total_taxes_and_charges,
-
-            "sales_invoice_grand_total":
-                invoice.grand_total,
-
-            "sales_invoice":
-                invoice.name,
-
-            "stripe_payment_link":
-                payment_link,
-
-            "stripe_payment_link_id":
-                payment_link_id,
-
-            "payment_entry":
-                None
-        }
-
-    except Exception:
-
-        frappe.db.rollback()
-
-        frappe.log_error(
-            frappe.get_traceback(),
-            "Partial Invoice and Stripe Payment Link Creation"
-        )
-
-        raise
-
-    finally:
-
-        # ---------------------------------------------------------
-        # RESTORE ORIGINAL USER
-        # ---------------------------------------------------------
-
-        frappe.set_user(
-            original_user
-        )
 
 import frappe
 import requests
@@ -10558,4 +10017,686 @@ def get_tower_details(tower):
     if not tower_details:
         return {}
 
-    return tower_details        
+    return tower_details
+    
+@frappe.whitelist(allow_guest=True)
+def create_partial_invoice_and_payment(customer_name):
+
+    """
+    Create partial Sales Invoice and Payment Entry.
+
+    Customer fields:
+    - custom_rate
+    - custom_amount
+    - custom_partial_start_date
+    - six_month_customer
+
+    Billing rules:
+    1-9: Full custom_rate
+    10-20: Half custom_rate
+    21-24: One-third custom_rate
+    25-31: One-fourth custom_rate
+
+    VAT: 5% exclusive of tax.
+
+    Six-month customer:
+    - Sales Invoice uses custom_rate for partial calculation.
+    - Sales Invoice item receives a 100% discount.
+    - Payment Entry uses custom_amount.
+    - Payment Entry has no Sales Invoice references.
+
+    Normal customer:
+    - Sales Invoice uses custom_rate for partial calculation.
+    - VAT 5% is added to the invoice.
+    - Payment Entry uses custom_rate.
+    - Payment Entry is allocated against the Sales Invoice.
+    """
+
+    # ---------------------------------------------------------
+    # SAVE CURRENT USER
+    # ---------------------------------------------------------
+
+    original_user = frappe.session.user
+
+    try:
+
+        # ---------------------------------------------------------
+        # SWITCH TO ADMINISTRATOR
+        # ---------------------------------------------------------
+
+        frappe.set_user("Administrator")
+
+        print("Original User:", original_user)
+        print("Current User:", frappe.session.user)
+
+        # ---------------------------------------------------------
+        # GET CUSTOMER
+        # ---------------------------------------------------------
+
+        if not customer_name:
+            frappe.throw("Customer name is required")
+
+        customer = frappe.get_doc(
+            "Customer",
+            customer_name
+        )
+
+        # ---------------------------------------------------------
+        # GET CUSTOMER RATE
+        # ---------------------------------------------------------
+
+        custom_rate = float(
+            customer.get("custom_rate") or 0
+        )
+
+        if custom_rate <= 0:
+            frappe.throw(
+                "Customer Rate must be greater than 0"
+            )
+
+        custom_rate = round(custom_rate, 2)
+
+        # ---------------------------------------------------------
+        # GET CUSTOMER AMOUNT
+        # Used for Payment Entry only for six-month customers.
+        # ---------------------------------------------------------
+
+        custom_amount = float(
+            customer.get("custom_amount") or 0
+        )
+
+        custom_amount = round(custom_amount, 2)
+
+        # ---------------------------------------------------------
+        # CHECK SIX-MONTH CUSTOMER
+        # ---------------------------------------------------------
+
+        six_month_customer = (
+            1 if customer.get("custom_six_month_customer") else 0
+        )
+
+        print(
+            "Six Month Customer:",
+            six_month_customer
+        )
+
+        print(
+            "Customer Rate:",
+            custom_rate
+        )
+
+        print(
+            "Customer Amount:",
+            custom_amount
+        )
+
+        if six_month_customer and custom_amount <= 0:
+
+            frappe.throw(
+                "Customer Amount must be greater than 0 "
+                "for six-month customers"
+            )
+
+        # ---------------------------------------------------------
+        # GET PARTIAL START DATE
+        # ---------------------------------------------------------
+
+        partial_start_date = customer.get(
+            "custom_partial_start_date"
+        )
+
+        if not partial_start_date:
+
+            frappe.throw(
+                "Partial Start Date is required"
+            )
+
+        partial_start_date = getdate(
+            partial_start_date
+        )
+
+        # ---------------------------------------------------------
+        # GET START DAY
+        # ---------------------------------------------------------
+
+        start_day = partial_start_date.day
+
+        # ---------------------------------------------------------
+        # CALCULATE PARTIAL INVOICE USING CUSTOM RATE
+        # ---------------------------------------------------------
+
+        if 1 <= start_day <= 9:
+
+            billing_divisor = 1
+            billing_period = "Full"
+
+            invoice_amount = custom_rate
+
+        elif 10 <= start_day <= 20:
+
+            billing_divisor = 2
+            billing_period = "Half"
+
+            invoice_amount = custom_rate / 2
+
+        elif 21 <= start_day <= 24:
+
+            billing_divisor = 3
+            billing_period = "One Third"
+
+            invoice_amount = custom_rate / 3
+
+        elif 25 <= start_day <= 31:
+
+            billing_divisor = 4
+            billing_period = "One Fourth"
+
+            invoice_amount = custom_rate / 4
+
+        else:
+
+            frappe.throw(
+                "Invalid Partial Start Date"
+            )
+
+        invoice_amount = round(
+            invoice_amount,
+            2
+        )
+
+        print(
+            "Billing Period:",
+            billing_period
+        )
+
+        print(
+            "Invoice Item Amount:",
+            invoice_amount
+        )
+
+        # ---------------------------------------------------------
+        # GET GREAT GRANDPARENT
+        # ---------------------------------------------------------
+
+        greatgrandparent_name = customer.get(
+            "custom_greatgrandparent_name"
+        )
+
+        # ---------------------------------------------------------
+        # INCOME ACCOUNT MAPPING
+        # ---------------------------------------------------------
+
+        income_account_map = {
+
+            "Downtown":
+                "Sales-Downtown - GG",
+
+            "Golden Miles":
+                "Sales-Golden Miles - GG",
+
+            "Shoreline Apartments":
+                "Sales-Shoreline Apartments - GG",
+
+            "Dubai Hills":
+                "Sales-Dubai Hills - GG",
+
+            "JLT":
+                "Sales-JLT - GG",
+
+            "Palm Jumeirah":
+                "Sales-Palm Jumeirah - GG",
+
+            "Creek Harbour":
+                "Sales-Creek Harbour - GG"
+
+        }
+
+        income_account = income_account_map.get(
+            greatgrandparent_name,
+            "Temporary Opening - GG"
+        )
+
+        print(
+            "Income Account:",
+            income_account
+        )
+
+        # ---------------------------------------------------------
+        # PREVENT DUPLICATE INVOICE
+        # ---------------------------------------------------------
+
+        existing_invoice = frappe.db.exists(
+            "Sales Invoice",
+            {
+                "customer": customer.name,
+                "posting_date": partial_start_date,
+                "custom_partial_start_date":
+                    partial_start_date
+            }
+        )
+
+        if existing_invoice:
+
+            frappe.throw(
+                f"Sales Invoice {existing_invoice} already exists "
+                f"for this customer and start date."
+            )
+
+        # ---------------------------------------------------------
+        # CREATE SALES INVOICE
+        # ---------------------------------------------------------
+
+        invoice = frappe.new_doc(
+            "Sales Invoice"
+        )
+
+        invoice.customer = customer.name
+        invoice.set_posting_time=1
+        invoice.posting_date=partial_start_date
+
+        invoice.disable_rounded_total = 1
+
+        invoice.posting_date = (
+            partial_start_date
+        )
+
+        invoice.due_date = (
+            partial_start_date
+        )
+
+        # ---------------------------------------------------------
+        # CUSTOM PARTIAL START DATE
+        # ---------------------------------------------------------
+
+        if invoice.meta.has_field(
+            "custom_partial_start_date"
+        ):
+
+            invoice.custom_partial_start_date = (
+                partial_start_date
+            )
+
+        # ---------------------------------------------------------
+        # ITEM
+        # ---------------------------------------------------------
+
+        item_row = {
+
+            "item_code":
+                "Go Green service",
+
+            "qty":
+                1,
+
+            "rate":
+                invoice_amount,
+
+            "income_account":
+                income_account
+
+        }
+
+        # ---------------------------------------------------------
+        # APPLY 100% DISCOUNT FOR SIX-MONTH CUSTOMERS
+        # ---------------------------------------------------------
+
+
+        invoice.append(
+            "items",
+            item_row
+        )
+        invoice.taxes_and_charges = "UAE VAT 5% - GG"
+
+        # ---------------------------------------------------------
+        # VAT 5% - SALES TAXES AND CHARGES
+        # VAT IS EXCLUSIVE OF TAX
+        # ---------------------------------------------------------
+
+        invoice.append(
+            "taxes",
+            {
+                "charge_type":
+                    "On Net Total",
+
+                "account_head":
+                    "VAT 5% - GG",
+
+                "description":
+                    "VAT 5%",
+
+                "rate":
+                    5,
+
+                "included_in_print_rate":
+                    0
+            }
+        )
+        if six_month_customer:
+
+            invoice.additional_discount_percentage= 100
+
+            print(
+                "Applying 100% discount "
+                "for six-month customer"
+            )
+
+        # ---------------------------------------------------------
+        # INSERT SALES INVOICE
+        # ---------------------------------------------------------
+
+        invoice.insert(
+            ignore_permissions=True
+        )
+
+        # ---------------------------------------------------------
+        # SUBMIT SALES INVOICE
+        # ---------------------------------------------------------
+
+        invoice.flags.ignore_permissions = True
+
+        invoice.submit()
+
+        print(
+            "Sales Invoice Submitted:",
+            invoice.name
+        )
+
+        print(
+            "Invoice Net Total:",
+            invoice.net_total
+        )
+
+        print(
+            "Invoice VAT Amount:",
+            invoice.total_taxes_and_charges
+        )
+
+        print(
+            "Invoice Grand Total:",
+            invoice.grand_total
+        )
+
+        # ---------------------------------------------------------
+        # SELECT PAYMENT AMOUNT
+        # ---------------------------------------------------------
+
+        if six_month_customer:
+
+            # Six-month customers use custom_amount.
+            payment_amount = custom_amount
+
+        else:
+
+            # Normal customers use custom_rate.
+            payment_amount = custom_amount
+
+        payment_amount = round(
+            payment_amount,
+            2
+        )
+
+        print(
+            "Payment Entry Amount:",
+            payment_amount
+        )
+
+        # ---------------------------------------------------------
+        # CREATE PAYMENT ENTRY
+        # ---------------------------------------------------------
+
+        payment_entry = frappe.new_doc(
+            "Payment Entry"
+        )
+
+        payment_entry.payment_type = "Receive"
+
+        payment_entry.party_type = "Customer"
+
+        payment_entry.party = customer.name
+
+        payment_entry.mode_of_payment = "Stripe"
+
+        payment_entry.posting_date = (
+            partial_start_date
+        )
+
+        # ---------------------------------------------------------
+        # PAYMENT AMOUNT
+        # ---------------------------------------------------------
+
+        payment_entry.paid_amount = (
+            payment_amount
+        )
+
+        payment_entry.received_amount = (
+            payment_amount
+        )
+
+        # ---------------------------------------------------------
+        # BANK ACCOUNT
+        # ---------------------------------------------------------
+
+        payment_entry.paid_to = (
+             "Bank of Baroda- Go Green - GG"
+        )
+
+        # ---------------------------------------------------------
+        # PAYMENT REFERENCE
+        # ---------------------------------------------------------
+
+        if payment_entry.meta.has_field(
+            "reference_no"
+        ):
+
+            payment_entry.reference_no = (
+                f"PARTIAL-{invoice.name}"
+            )
+
+        if payment_entry.meta.has_field(
+            "reference_date"
+        ):
+
+            payment_entry.reference_date = (
+                partial_start_date
+            )
+
+        # ---------------------------------------------------------
+        # PAYMENT ENTRY REFERENCES
+        # ---------------------------------------------------------
+
+        allocated_amount = 0
+
+        if not six_month_customer:
+
+            # -----------------------------------------------------
+            # NORMAL CUSTOMER
+            # ATTACH SALES INVOICE
+            # -----------------------------------------------------
+
+            allocated_amount = min(
+                payment_amount,
+                invoice.outstanding_amount
+            )
+
+            allocated_amount = round(
+                allocated_amount,
+                2
+            )
+
+            payment_entry.append(
+                "references",
+                {
+                    "reference_doctype":
+                        "Sales Invoice",
+
+                    "reference_name":
+                        invoice.name,
+
+                    "total_amount":
+                        invoice.grand_total,
+
+                    "outstanding_amount":
+                        invoice.outstanding_amount,
+
+                    "allocated_amount":
+                        allocated_amount
+                }
+            )
+
+            print(
+                "Sales Invoice attached to Payment Entry:",
+                invoice.name
+            )
+
+        else:
+
+            # -----------------------------------------------------
+            # SIX-MONTH CUSTOMER
+            # DO NOT ATTACH ANY SALES INVOICE
+            # -----------------------------------------------------
+
+            print(
+                "Six-month customer: Payment Entry will use "
+                "custom_amount without Sales Invoice references."
+            )
+
+        # ---------------------------------------------------------
+        # INSERT PAYMENT ENTRY
+        # ---------------------------------------------------------
+
+        payment_entry.insert(
+            ignore_permissions=True
+        )
+
+        # ---------------------------------------------------------
+        # SUBMIT PAYMENT ENTRY
+        # ---------------------------------------------------------
+
+        payment_entry.flags.ignore_permissions = True
+
+        payment_entry.save()
+
+        print(
+            "Payment Entry Submitted:",
+            payment_entry.name
+        )
+
+        print(
+            "Payment Entry Amount:",
+            payment_entry.paid_amount
+        )
+
+        print(
+            "Allocated Amount:",
+            allocated_amount
+        )
+
+        # ---------------------------------------------------------
+        # CALCULATE UNALLOCATED AMOUNT
+        # ---------------------------------------------------------
+
+        expected_unallocated = round(
+            payment_amount - allocated_amount,
+            2
+        )
+
+        # ---------------------------------------------------------
+        # COMMIT
+        # ---------------------------------------------------------
+
+        frappe.db.commit()
+
+        # ---------------------------------------------------------
+        # RETURN RESULT
+        # ---------------------------------------------------------
+
+        return {
+
+            "success":
+                True,
+
+            "customer":
+                customer.name,
+
+            "partial_start_date":
+                str(partial_start_date),
+
+            "partial_start_day":
+                start_day,
+
+            "billing_period":
+                billing_period,
+
+            "billing_divisor":
+                billing_divisor,
+
+            "custom_rate":
+                custom_rate,
+
+            "custom_amount":
+                custom_amount,
+
+            "invoice_item_amount":
+                invoice_amount,
+
+            "six_month_customer":
+                bool(six_month_customer),
+
+            "vat_inclusive":
+                False,
+
+            "vat_rate":
+                5,
+
+            "discount_percentage":
+                100 if six_month_customer else 0,
+
+            "invoice_net_amount":
+                invoice.net_total,
+
+            "invoice_vat_amount":
+                invoice.total_taxes_and_charges,
+
+            "sales_invoice_grand_total":
+                invoice.grand_total,
+
+            "payment_entry_amount":
+                payment_entry.paid_amount,
+
+            "allocated_amount":
+                allocated_amount,
+
+            "unallocated_amount":
+                expected_unallocated,
+
+            "sales_invoice":
+                invoice.name,
+
+            "payment_entry":
+                payment_entry.name,
+
+            "payment_entry_has_invoice_reference":
+                bool(payment_entry.references)
+
+        }
+
+    except Exception:
+
+        frappe.db.rollback()
+
+        frappe.log_error(
+            frappe.get_traceback(),
+            "Partial Invoice and Payment Creation"
+        )
+
+        raise
+
+    finally:
+
+        # ---------------------------------------------------------
+        # RESTORE ORIGINAL USER
+        # ---------------------------------------------------------
+
+        frappe.set_user(
+            original_user
+        )               
