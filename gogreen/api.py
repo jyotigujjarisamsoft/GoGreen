@@ -10453,6 +10453,13 @@ def create_partial_invoice_and_payment(customer_name):
         payment_entry.party_type = "Customer"
 
         payment_entry.party = customer.name
+        payment_entry.greatgrandparent_name = customer.get("custom_greatgrandparent_name")
+        payment_entry.grandparent_name = customer.get("custom_grandparent_name")
+        payment_entry.parent_name = customer.get("custom_parent_name")
+        payment_entry.cluster = customer.get("custom_cluster")
+        payment_entry.tower = customer.get("custom_tower")
+        
+        
 
         payment_entry.mode_of_payment = "Stripe"
 
