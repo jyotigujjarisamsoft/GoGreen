@@ -1,5 +1,5 @@
 {
- "add_total_row": 0,
+ "add_total_row": 1,
  "add_translate_data": 0,
  "columns": [],
  "creation": "2026-11-12 15:18:31.573022",
@@ -40,6 +40,9 @@
   },
   {
    "role": "Accounts Manager"
+  },
+   {
+   "role": "Team Leader"
   }
  ],
  "timeout": 0

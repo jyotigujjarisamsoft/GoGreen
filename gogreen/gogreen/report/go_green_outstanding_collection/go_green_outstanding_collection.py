@@ -41,6 +41,12 @@ def get_columns():
             "width": 100,
         },
         {
+            "label": _("Online Status"),
+            "fieldname": "online_status",
+            "fieldtype": "Data",
+            "width": 100,
+        },
+        {
             "label": _("Billing Month"),
             "fieldname": "billing_month",
             "fieldtype": "Data", # Changed to Data to support text formatting
@@ -87,6 +93,11 @@ def get_data(filters):
         # Using customer_name for the filter
         conditions.append("si.customer LIKE %(ledger_name)s")
         values["ledger_name"] = f"%{filters['ledger_name']}%"
+        
+    if filters.get("online_status"):
+        # Using customer_name for the filter
+        conditions.append("c.custom_online LIKE %(online_status)s")
+        values["online_status"] = f"%{filters['online_status']}%"
 
     where_clause = "WHERE " + " AND ".join(conditions)
 
@@ -97,6 +108,7 @@ def get_data(filters):
             COALESCE(c.custom_cluster, '') AS cluster,
             COALESCE(c.custom_tower, '') AS tower,
             COALESCE(c.custom_flat_no, '') AS flat_no,
+            c.custom_online AS online_status,
             DATE_FORMAT(si.posting_date, '%%b %%Y') AS billing_month, 
             si.customer AS customer_id,
             si.customer_name AS ledger_name,
@@ -138,6 +150,7 @@ def get_data(filters):
             "cluster": r.get("cluster"),
             "tower": r.get("tower"),
             "flat_no": r.get("flat_no"),
+            "online_status": r.get("online_status"),
             "billing_month": r.get("billing_month"), # Will display as "Aug 2026"
             "ledger_name": ledger,
             "outstanding": r.get("outstanding"),

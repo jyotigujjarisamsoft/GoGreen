@@ -31,6 +31,13 @@ frappe.query_reports["Go Green Outstanding Collection"] = {
             options: "Customer", // Standard ERPNext DocType for Ledger/Customer
             width: 200,
         },
+        {
+    fieldname: "online_status",
+    label: __("Online Status"),
+    fieldtype: "Select",
+    options: "\nYes\nNo", // The empty first line is optional, it allows you to have a blank default filter
+    width: 200,
+}
     ],
 
     // Optional: format the merged total column to be bold
