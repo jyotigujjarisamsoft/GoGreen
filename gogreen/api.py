@@ -4992,7 +4992,7 @@ from frappe.utils import getdate, today
 
 
 @frappe.whitelist()
-def create_payment_collections_from_sales_invoices(
+def old_create_payment_collections_from_sales_invoices(
     from_date,
     to_date=None
 ):
@@ -5059,7 +5059,7 @@ def create_payment_collections_from_sales_invoices(
     }
 
 
-def create_payment_collections_background(
+def old_create_payment_collections_background(
     from_date,
     to_date
 ):
@@ -11833,3 +11833,446 @@ def latest_payment_stripe_webhook():
         # -----------------------------------------
 
         frappe.set_user(original_user)
+        
+
+import frappe
+from frappe.utils import getdate, today
+
+@frappe.whitelist()
+def create_payment_collections_from_sales_invoices(to_date=None):
+
+    """
+    Create new Payment Collections from all outstanding Sales Invoices.
+
+    Logic:
+    1. to_date defaults to today.
+    2. Fetch all submitted Sales Invoices up to to_date.
+    3. Only fetch invoices with outstanding_amount > 0.
+    4. Group invoices by Customer.custom_new_mobile_no.
+    5. Skip invoices already present in DRAFT Payment Collections.
+    6. Ignore invoices in SUBMITTED Payment Collections.
+    7. Always create NEW Payment Collections.
+    8. Never update existing Payment Collections.
+    """
+
+    # ---------------------------------------------------------
+    # DATE
+    # ---------------------------------------------------------
+
+    if not to_date:
+        to_date = getdate(today())
+    else:
+        to_date = getdate(to_date)
+
+    # ---------------------------------------------------------
+    # START BACKGROUND JOB
+    # ---------------------------------------------------------
+
+    frappe.enqueue(
+        "gogreen.api.create_payment_collections_background",
+        queue="long",
+        timeout=3600,
+        to_date=to_date
+    )
+
+    return {
+        "success": True,
+        "message": (
+            f"Payment Collection creation started "
+            f"up to {to_date}."
+        )
+    }
+
+def create_payment_collections_background(to_date):
+
+    frappe.set_user("Administrator")
+
+    to_date = getdate(to_date)
+
+    logger = frappe.logger("payment_collection")
+
+    logger.info(
+        f"Payment Collection process started up to {to_date}"
+    )
+
+    # ---------------------------------------------------------
+    # FETCH ALL OUTSTANDING SUBMITTED SALES INVOICES
+    # ---------------------------------------------------------
+
+    sales_invoices = frappe.get_all(
+        "Sales Invoice",
+        filters={
+            "posting_date": ["<=", to_date],
+            "docstatus": 1,
+            "outstanding_amount": [">", 0]
+        },
+        fields=[
+            "name",
+            "customer",
+            "customer_name",
+            "posting_date",
+            "grand_total",
+            "outstanding_amount"
+        ],
+        order_by="posting_date asc, name asc"
+    )
+
+    total_invoices = len(sales_invoices)
+
+    logger.info(
+        f"Total outstanding Sales Invoices found: {total_invoices}"
+    )
+
+    if not sales_invoices:
+        logger.info("No outstanding Sales Invoices found.")
+        return
+
+    # ---------------------------------------------------------
+    # FETCH ONLY DRAFT PAYMENT COLLECTIONS
+    # ---------------------------------------------------------
+
+    draft_payment_collections = frappe.get_all(
+        "Payment Collection",
+        filters={
+            "docstatus": 0
+        },
+        pluck="name"
+    )
+
+    logger.info(
+        f"Draft Payment Collections found: "
+        f"{len(draft_payment_collections)}"
+    )
+
+    # ---------------------------------------------------------
+    # GET INVOICES ALREADY PRESENT IN DRAFT COLLECTIONS
+    # ---------------------------------------------------------
+
+    already_processed_invoices = set()
+
+    if draft_payment_collections:
+
+        existing_invoice_rows = frappe.get_all(
+            "Sales Invoice Collection",
+            filters={
+                "parent": [
+                    "in",
+                    draft_payment_collections
+                ],
+                "parenttype": "Payment Collection",
+                "sales_invoice": ["is", "set"]
+            },
+            fields=[
+                "sales_invoice",
+                "parent"
+            ]
+        )
+
+        for row in existing_invoice_rows:
+
+            if row.sales_invoice:
+
+                already_processed_invoices.add(
+                    row.sales_invoice
+                )
+
+    logger.info(
+        f"Already processed invoices in Draft Payment Collections: "
+        f"{len(already_processed_invoices)}"
+    )
+
+    # ---------------------------------------------------------
+    # GET UNIQUE CUSTOMER NAMES
+    # ---------------------------------------------------------
+
+    customer_names = list(
+        set(
+            invoice.customer
+            for invoice in sales_invoices
+            if invoice.customer
+        )
+    )
+
+    # ---------------------------------------------------------
+    # CUSTOMER → MOBILE MAP
+    # ---------------------------------------------------------
+
+    customer_mobile_map = {}
+
+    batch_size = 500
+
+    for start in range(
+        0,
+        len(customer_names),
+        batch_size
+    ):
+
+        batch = customer_names[
+            start:start + batch_size
+        ]
+
+        customers = frappe.get_all(
+            "Customer",
+            filters={
+                "name": ["in", batch]
+            },
+            fields=[
+                "name",
+                "custom_new_mobile_no"
+            ]
+        )
+
+        for customer in customers:
+
+            mobile_no = customer.custom_new_mobile_no
+
+            if mobile_no:
+                mobile_no = str(
+                    mobile_no
+                ).strip()
+
+            customer_mobile_map[
+                customer.name
+            ] = mobile_no
+
+    # ---------------------------------------------------------
+    # GROUP INVOICES BY MOBILE NUMBER
+    # ---------------------------------------------------------
+
+    invoices_by_mobile = {}
+
+    skipped_no_mobile = 0
+    skipped_draft_invoice = 0
+
+    for invoice in sales_invoices:
+
+        # -----------------------------------------------------
+        # SKIP IF INVOICE EXISTS IN DRAFT COLLECTION
+        # -----------------------------------------------------
+
+        if invoice.name in already_processed_invoices:
+
+            skipped_draft_invoice += 1
+
+            logger.info(
+                f"Skipping invoice {invoice.name}. "
+                f"Already exists in Draft Payment Collection."
+            )
+
+            continue
+
+        # -----------------------------------------------------
+        # GET CUSTOMER MOBILE NUMBER
+        # -----------------------------------------------------
+
+        customer = invoice.customer
+
+        mobile_no = customer_mobile_map.get(customer)
+
+        # -----------------------------------------------------
+        # SKIP IF MOBILE NUMBER IS EMPTY
+        # -----------------------------------------------------
+
+        if not mobile_no:
+
+            skipped_no_mobile += 1
+
+            logger.warning(
+                f"Skipping {invoice.name}. "
+                f"Customer {customer} has no "
+                f"custom_new_mobile_no."
+            )
+
+            continue
+
+        # -----------------------------------------------------
+        # GROUP BY MOBILE NUMBER
+        # -----------------------------------------------------
+
+        if mobile_no not in invoices_by_mobile:
+
+            invoices_by_mobile[mobile_no] = []
+
+        invoices_by_mobile[mobile_no].append(invoice)
+
+    # ---------------------------------------------------------
+    # CREATE NEW PAYMENT COLLECTIONS
+    # ---------------------------------------------------------
+
+    created_count = 0
+    added_invoice_count = 0
+    skipped_collection_count = 0
+
+    for mobile_no, invoices in invoices_by_mobile.items():
+
+        try:
+
+            # -------------------------------------------------
+            # CREATE NEW PAYMENT COLLECTION
+            # -------------------------------------------------
+
+            payment_collection = frappe.new_doc(
+                "Payment Collection"
+            )
+
+            # -------------------------------------------------
+            # MOBILE NUMBER
+            # -------------------------------------------------
+
+            payment_collection.mobile_number = mobile_no
+
+            # -------------------------------------------------
+            # TO DATE
+            # -------------------------------------------------
+
+            if hasattr(payment_collection, "to_date"):
+
+                payment_collection.to_date = to_date
+
+            # -------------------------------------------------
+            # TOTAL AMOUNT
+            # -------------------------------------------------
+
+            total_amount = 0
+            new_invoice_count = 0
+
+            # -------------------------------------------------
+            # ADD SALES INVOICE CHILD ROWS
+            # -------------------------------------------------
+
+            for invoice in invoices:
+
+                # ---------------------------------------------
+                # CHECK DRAFT DUPLICATE
+                # ---------------------------------------------
+
+                if invoice.name in already_processed_invoices:
+                    continue
+
+                # ---------------------------------------------
+                # GET OUTSTANDING AMOUNT
+                # ---------------------------------------------
+
+                outstanding_amount = (
+                    invoice.outstanding_amount or 0
+                )
+
+                if outstanding_amount <= 0:
+                    continue
+
+                # ---------------------------------------------
+                # APPEND CHILD ROW
+                # ---------------------------------------------
+
+                row = payment_collection.append(
+                    "sales_invoice_collection",
+                    {}
+                )
+
+                # Customer Name
+                row.customer_name = (
+                    invoice.customer_name
+                    or invoice.customer
+                )
+
+                # Sales Invoice
+                row.sales_invoice = invoice.name
+                row.posting_date=invoice.posting_date
+
+                # Outstanding Amount
+                row.amount = outstanding_amount
+
+                # Update Total
+                total_amount += outstanding_amount
+
+                new_invoice_count += 1
+                added_invoice_count += 1
+
+                # Update duplicate set
+                already_processed_invoices.add(
+                    invoice.name
+                )
+
+                logger.info(
+                    f"Added invoice {invoice.name} "
+                    f"to Payment Collection. "
+                    f"Outstanding: {outstanding_amount}"
+                )
+
+            # -------------------------------------------------
+            # INSERT ONLY IF INVOICES ARE AVAILABLE
+            # -------------------------------------------------
+
+            if new_invoice_count > 0:
+
+                payment_collection.total_amount = total_amount
+
+                payment_collection.insert(
+                    ignore_permissions=True
+                )
+
+                created_count += 1
+
+                logger.info(
+                    f"Created Payment Collection "
+                    f"{payment_collection.name}. "
+                    f"Mobile: {mobile_no}. "
+                    f"Invoices: {new_invoice_count}. "
+                    f"Total Amount: {total_amount}"
+                )
+
+            else:
+
+                skipped_collection_count += 1
+
+                logger.info(
+                    f"No eligible invoices for mobile "
+                    f"{mobile_no}. Payment Collection not created."
+                )
+
+        except Exception:
+
+            frappe.log_error(
+                frappe.get_traceback(),
+                f"Payment Collection Error - {mobile_no}"
+            )
+
+    # ---------------------------------------------------------
+    # FINAL LOG
+    # ---------------------------------------------------------
+
+    logger.info(
+        f"""
+        Payment Collection process completed.
+
+        To Date:
+            {to_date}
+
+        Total Outstanding Sales Invoices:
+            {total_invoices}
+
+        Unique Mobile Numbers:
+            {len(invoices_by_mobile)}
+
+        Payment Collections Created:
+            {created_count}
+
+        New Invoice Rows Added:
+            {added_invoice_count}
+
+        Invoices Skipped (Already in Draft):
+            {skipped_draft_invoice}
+
+        Invoices without Mobile:
+            {skipped_no_mobile}
+
+        Mobile Groups Without Eligible Invoices:
+            {skipped_collection_count}
+        """
+    )
+
+    # ---------------------------------------------------------
+    # COMMIT
+    # ---------------------------------------------------------
+
+    frappe.db.commit()
