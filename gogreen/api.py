@@ -8902,7 +8902,7 @@ def create_single_payment_link_for_requested_customer(customer_name, payment_col
     
     
 @frappe.whitelist()
-def create_stripe_payment_links_for_payment_collections(
+def latest_old_create_stripe_payment_links_for_payment_collections(
     from_date,
     to_date=None
 ):
@@ -9581,7 +9581,7 @@ def create_stripe_payment_links_for_payment_collections(
             batch_number
     }
     
-def create_single_payment_collection_link(
+def old_create_single_payment_collection_link(
     payment_collection_name,
     total_amount,
     customer_name,
@@ -12276,3 +12276,926 @@ def create_payment_collections_background(to_date):
     # ---------------------------------------------------------
 
     frappe.db.commit()
+    
+@frappe.whitelist()
+def create_stripe_payment_links_for_payment_collections():
+    """
+    Create Stripe Payment Links for all Draft Payment Collections
+    which do not already have a Stripe Payment Link.
+
+    One Stripe Payment Link is created per Payment Collection.
+
+    Example:
+
+        Payment Collection:
+            PAY-2026-09-00001
+
+        Total Amount:
+            450 AED
+
+        Stripe Metadata:
+            payment_collection = PAY-2026-09-00001
+    """
+
+    import concurrent.futures
+    import time
+
+    # -------------------------------------------------------------
+    # START LOG
+    # -------------------------------------------------------------
+
+    print("\n" + "=" * 100)
+    print("STARTING STRIPE PAYMENT COLLECTION LINK CREATION")
+    print("=" * 100)
+
+    # -------------------------------------------------------------
+    # STRIPE SECRET KEY
+    # -------------------------------------------------------------
+
+    print("\n[1] Checking Stripe Secret Key...")
+
+    stripe_secret_key = frappe.conf.get(
+        "stripe_secret_key"
+    )
+
+    if not stripe_secret_key:
+
+        print(
+            "[ERROR] Stripe Secret Key is NOT configured!"
+        )
+
+        frappe.throw(
+            "Stripe Secret Key is not configured."
+        )
+
+    print(
+        "[2] Stripe Secret Key found."
+    )
+
+    # -------------------------------------------------------------
+    # STRIPE PAYMENT LINKS API
+    # -------------------------------------------------------------
+
+    stripe_url = (
+        "https://api.stripe.com/v1/payment_links"
+    )
+
+    # -------------------------------------------------------------
+    # COUNTERS
+    # -------------------------------------------------------------
+
+    created = 0
+    failed = 0
+    skipped = 0
+    batch_number = 0
+
+    # Keep track of every collection attempted in this run.
+    # This prevents failed Stripe requests from being fetched
+    # repeatedly in an endless loop.
+    processed_payment_collections = set()
+
+    # -------------------------------------------------------------
+    # BATCH SETTINGS
+    # -------------------------------------------------------------
+
+    BATCH_SIZE = 50
+    MAX_WORKERS = 10
+
+    print("\n" + "-" * 100)
+    print("STARTING BATCH PROCESSING")
+    print(f"Batch Size    : {BATCH_SIZE}")
+    print(f"Workers       : {MAX_WORKERS}")
+    print(f"Stripe API    : {stripe_url}")
+    print("-" * 100)
+
+    # =============================================================
+    # PROCESS UNTIL NO PAYMENT COLLECTIONS ARE LEFT
+    # =============================================================
+
+    while True:
+
+        batch_number += 1
+
+        print("\n")
+        print("#" * 100)
+
+        print(
+            f"BATCH {batch_number} STARTED"
+        )
+
+        print("#" * 100)
+
+        # ---------------------------------------------------------
+        # GET NEXT 50 PAYMENT COLLECTIONS
+        # ---------------------------------------------------------
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Fetching next {BATCH_SIZE} Payment Collections..."
+        )
+
+        collection_filters = {
+            # Only Draft Payment Collections
+            "docstatus": 0
+        }
+
+        # Exclude collections already attempted in this run.
+        # This also prevents failed Stripe requests from causing
+        # the same records to be fetched forever.
+        if processed_payment_collections:
+            collection_filters["name"] = [
+                "not in",
+                list(processed_payment_collections)
+            ]
+
+        payment_collections = frappe.get_all(
+            "Payment Collection",
+
+            filters=collection_filters,
+
+            # Include both NULL and empty-string Stripe links.
+            or_filters=[
+                {
+                    "stripe_payment_link": ["is", "not set"]
+                },
+                {
+                    "stripe_payment_link": ["=", ""]
+                }
+            ],
+
+            fields=[
+                "name",
+                "mobile_number",
+                "total_amount",
+                "stripe_payment_link"
+            ],
+
+            order_by="creation asc",
+
+            limit_page_length=BATCH_SIZE
+        )
+
+        # Mark this batch as attempted before processing it.
+        for payment_collection in payment_collections:
+            processed_payment_collections.add(
+                payment_collection.name
+            )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Payment Collections fetched: "
+            f"{len(payment_collections)}"
+        )
+
+        # ---------------------------------------------------------
+        # NO MORE PAYMENT COLLECTIONS
+        # ---------------------------------------------------------
+
+        if not payment_collections:
+
+            print("\n" + "=" * 100)
+            print("NO MORE PAYMENT COLLECTIONS FOUND")
+            print("=" * 100)
+
+            break
+
+        # ---------------------------------------------------------
+        # PROCESSING
+        # ---------------------------------------------------------
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Processing "
+            f"{len(payment_collections)} Payment Collections..."
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"First Payment Collection : "
+            f"{payment_collections[0].name}"
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Last Payment Collection  : "
+            f"{payment_collections[-1].name}"
+        )
+
+        batch_created = 0
+        batch_failed = 0
+
+        # =========================================================
+        # PREPARE STRIPE TASKS
+        #
+        # IMPORTANT:
+        #
+        # Only plain data is passed to worker threads.
+        #
+        # No frappe.db / frappe.get_doc inside workers.
+        # =========================================================
+
+        payment_collection_tasks = []
+
+        for index, payment_collection in enumerate(
+            payment_collections,
+            start=1
+        ):
+
+            try:
+
+                # ---------------------------------------------------------
+                # FETCH CUSTOMER NAME FROM FIRST CHILD-TABLE ROW
+                # ---------------------------------------------------------
+
+                print(
+                    f"[{payment_collection.name}] "
+                    "Fetching first Sales Invoice..."
+                )
+
+                first_invoice_row = frappe.get_all(
+                    "Sales Invoice Collection",
+                    filters={
+                        "parent": payment_collection.name,
+                        "parenttype": "Payment Collection"
+                    },
+                    fields=["sales_invoice"],
+                    order_by="idx asc",
+                    limit_page_length=1
+                )
+
+                customer_name = ""
+
+                if first_invoice_row:
+
+                    sales_invoice = (
+                        first_invoice_row[0].get("sales_invoice")
+                    )
+
+                    print(
+                        f"[{payment_collection.name}] "
+                        f"First Sales Invoice: {sales_invoice}"
+                    )
+
+                    if sales_invoice:
+
+                        customer = frappe.db.get_value(
+                            "Sales Invoice",
+                            sales_invoice,
+                            "customer"
+                        )
+
+                        if customer:
+                            customer_name = frappe.db.get_value(
+                                "Customer",
+                                customer,
+                                "customer_name"
+                            ) or ""
+
+                print(
+                    f"[{payment_collection.name}] "
+                    f"Customer Name: {customer_name}"
+                )
+
+                payment_collection_tasks.append({
+
+                    "payment_collection_name":
+                        payment_collection.name,
+
+                    "total_amount":
+                        payment_collection.total_amount or 0,
+
+                    "customer_name":
+                        customer_name,
+
+                    "index":
+                        index
+                })
+
+            except Exception:
+
+                batch_failed += 1
+                failed += 1
+
+                error_message = (
+                    frappe.get_traceback()
+                )
+
+                print(
+                    f"[{payment_collection.name}] "
+                    f"Failed to prepare Stripe task"
+                )
+
+                print(
+                    error_message
+                )
+
+                frappe.log_error(
+                    error_message,
+                    (
+                        "Payment Collection "
+                        "Task Preparation Error - "
+                        f"{payment_collection.name}"
+                    )
+                )
+
+        # =========================================================
+        # START CONCURRENT STRIPE WORKERS
+        # =========================================================
+
+        print("\n")
+
+        print(
+            f"[Batch {batch_number}] "
+            f"Starting {MAX_WORKERS} concurrent workers..."
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=MAX_WORKERS
+        ) as executor:
+
+            future_to_payment_collection = {}
+
+            # -----------------------------------------------------
+            # SUBMIT STRIPE REQUESTS
+            # -----------------------------------------------------
+
+            for task in payment_collection_tasks:
+
+                payment_collection_name = (
+                    task[
+                        "payment_collection_name"
+                    ]
+                )
+
+                total_amount = (
+                    task[
+                        "total_amount"
+                    ]
+                )
+
+                customer_name = (
+                    task.get("customer_name") or ""
+                )
+
+                index = task[
+                    "index"
+                ]
+
+                print(
+                    f"[Batch {batch_number}] "
+                    f"Submitting "
+                    f"Payment Collection "
+                    f"{index}/{len(payment_collection_tasks)}: "
+                    f"{payment_collection_name}"
+                )
+
+                future = executor.submit(
+
+                    create_single_payment_collection_link,
+
+                    payment_collection_name,
+
+                    total_amount,
+
+                    customer_name,
+
+                    stripe_secret_key,
+
+                    stripe_url,
+
+                    batch_number,
+
+                    index,
+
+                    len(payment_collection_tasks)
+                )
+
+                future_to_payment_collection[
+                    future
+                ] = payment_collection_name
+
+                # -------------------------------------------------
+                # SMALL RATE LIMITING DELAY
+                # -------------------------------------------------
+
+                time.sleep(
+                    0.05
+                )
+
+            # -----------------------------------------------------
+            # PROCESS COMPLETED STRIPE REQUESTS
+            # -----------------------------------------------------
+
+            for future in concurrent.futures.as_completed(
+                future_to_payment_collection
+            ):
+
+                payment_collection_name = (
+                    future_to_payment_collection[
+                        future
+                    ]
+                )
+
+                try:
+
+                    result = future.result()
+
+                    # =================================================
+                    # SUCCESS
+                    # =================================================
+
+                    if result.get("success"):
+
+                        payment_link = (
+                            result.get(
+                                "payment_link"
+                            )
+                        )
+
+                        payment_link_id = (
+                            result.get(
+                                "payment_link_id"
+                            )
+                        )
+
+                        print("\n")
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"SUCCESS"
+                        )
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"Payment Link ID: "
+                            f"{payment_link_id}"
+                        )
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"Payment Link: "
+                            f"{payment_link}"
+                        )
+
+                        # -------------------------------------------------
+                        # MAIN THREAD - SAFE Frappe DB UPDATE
+                        # -------------------------------------------------
+
+                        frappe.db.set_value(
+
+                            "Payment Collection",
+
+                            payment_collection_name,
+
+                            {
+                                "stripe_payment_link":
+                                    payment_link,
+
+                                "stripe_payment_link_id":
+                                    payment_link_id,
+
+                                "stripe_payment_status":
+                                    "Created"
+                            },
+
+                            update_modified=False
+                        )
+
+                        batch_created += 1
+                        created += 1
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"Payment Collection updated."
+                        )
+
+                        print(
+                            f"Total Created : "
+                            f"{created}"
+                        )
+
+                    # =================================================
+                    # FAILED
+                    # =================================================
+
+                    else:
+
+                        batch_failed += 1
+                        failed += 1
+
+                        error_message = (
+                            result.get(
+                                "error",
+                                "Unknown error"
+                            )
+                        )
+
+                        print("\n")
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"FAILED"
+                        )
+
+                        print(
+                            f"[{payment_collection_name}] "
+                            f"Error: "
+                            f"{error_message}"
+                        )
+
+                        frappe.log_error(
+                            error_message,
+                            (
+                                "Payment Collection "
+                                "Payment Link Error - "
+                                f"{payment_collection_name}"
+                            )
+                        )
+
+                except Exception:
+
+                    batch_failed += 1
+                    failed += 1
+
+                    error_message = (
+                        frappe.get_traceback()
+                    )
+
+                    print("\n")
+                    print("!" * 100)
+
+                    print(
+                        f"EXCEPTION FOR PAYMENT COLLECTION: "
+                        f"{payment_collection_name}"
+                    )
+
+                    print("!" * 100)
+
+                    print(
+                        error_message
+                    )
+
+                    frappe.log_error(
+                        error_message,
+                        (
+                            "Payment Collection "
+                            "Payment Link Exception - "
+                            f"{payment_collection_name}"
+                        )
+                    )
+
+        # =========================================================
+        # COMMIT AFTER EACH BATCH
+        # =========================================================
+
+        print("\n")
+        print("-" * 100)
+
+        print(
+            f"BATCH {batch_number} COMPLETED"
+        )
+
+        print(
+            f"Batch Size       : "
+            f"{len(payment_collections)}"
+        )
+
+        print(
+            f"Batch Created    : "
+            f"{batch_created}"
+        )
+
+        print(
+            f"Batch Failed     : "
+            f"{batch_failed}"
+        )
+
+        print(
+            f"Total Created    : "
+            f"{created}"
+        )
+
+        print(
+            f"Total Failed     : "
+            f"{failed}"
+        )
+
+        print(
+            f"Committing Batch {batch_number}..."
+        )
+
+        frappe.db.commit()
+
+        print(
+            f"Batch {batch_number} "
+            f"COMMITTED SUCCESSFULLY"
+        )
+
+        print("-" * 100)
+
+    # =============================================================
+    # FINAL COMMIT
+    # =============================================================
+
+    print("\n")
+    print("=" * 100)
+
+    print(
+        "PAYMENT COLLECTION STRIPE LINK CREATION COMPLETED"
+    )
+
+    print("=" * 100)
+
+    frappe.db.commit()
+
+    print(
+        f"Total Created : {created}"
+    )
+
+    print(
+        f"Total Failed  : {failed}"
+    )
+
+    print(
+        f"Total Batches : {batch_number}"
+    )
+
+    print("=" * 100)
+
+    return {
+
+        "created":
+            created,
+
+        "failed":
+            failed,
+
+        "batches":
+            batch_number
+    }
+    
+def create_single_payment_collection_link(
+    payment_collection_name,
+    total_amount,
+    customer_name,
+    stripe_secret_key,
+    stripe_url,
+    batch_number,
+    index,
+    total_count
+):
+    """
+    Create one Stripe Payment Link for one
+    Payment Collection.
+
+    IMPORTANT:
+
+    This function only talks to Stripe.
+
+    It does NOT use frappe.db or frappe.get_doc.
+    """
+
+    import requests
+
+    try:
+
+        # ---------------------------------------------------------
+        # VALIDATE AMOUNT
+        # ---------------------------------------------------------
+
+        total_amount = (
+            total_amount or 0
+        )
+
+        if float(total_amount) <= 0:
+
+            return {
+                "success": False,
+                "error": (
+                    "Payment Collection total amount "
+                    "must be greater than 0."
+                )
+            }
+
+        # ---------------------------------------------------------
+        # AMOUNT IN FILS
+        # ---------------------------------------------------------
+
+        amount_in_fils = int(
+            round(
+                float(total_amount) * 100
+            )
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"[{payment_collection_name}] "
+            f"Amount: {total_amount} AED"
+        )
+
+        print(
+            f"[Batch {batch_number}] "
+            f"[{payment_collection_name}] "
+            f"Amount in fils: {amount_in_fils}"
+        )
+
+        # ---------------------------------------------------------
+        # STRIPE HEADERS
+        # ---------------------------------------------------------
+
+        headers = {
+
+            "Authorization":
+                f"Bearer {stripe_secret_key}",
+
+            "Content-Type":
+                "application/x-www-form-urlencoded"
+        }
+
+        # ---------------------------------------------------------
+        # STRIPE PAYMENT LINK DATA
+        # ---------------------------------------------------------
+
+        data = {
+
+	    # -----------------------------------------------------
+	    # CURRENCY
+	    # -----------------------------------------------------
+
+	    "line_items[0][price_data][currency]": "aed",
+
+	    # -----------------------------------------------------
+	    # PRODUCT NAME
+	    # Displayed on Stripe Checkout
+	    # -----------------------------------------------------
+
+	    "line_items[0][price_data][product_data][name]":
+		f"Go Green Service - {customer_name}",
+
+	    # -----------------------------------------------------
+	    # PRODUCT DESCRIPTION
+	    # Display customer and payment collection details
+	    # -----------------------------------------------------
+
+	    "line_items[0][price_data][product_data][description]":
+		f"Customer: {customer_name} | Payment Collection: {payment_collection_name}",
+
+	    # -----------------------------------------------------
+	    # AMOUNT
+	    # -----------------------------------------------------
+
+	    "line_items[0][price_data][unit_amount]":
+		str(amount_in_fils),
+
+	    # -----------------------------------------------------
+	    # QUANTITY
+	    # -----------------------------------------------------
+
+	    "line_items[0][quantity]": "1",
+
+	    # -----------------------------------------------------
+	    # AFTER PAYMENT
+	    # -----------------------------------------------------
+
+	    "after_completion[type]": "hosted_confirmation",
+
+	    # -----------------------------------------------------
+	    # PAYMENT LINK METADATA
+	    # -----------------------------------------------------
+
+	    "metadata[payment_collection]":
+		payment_collection_name,
+
+	    "metadata[customer_name]":
+		customer_name,
+
+	    # -----------------------------------------------------
+	    # PAYMENT INTENT METADATA
+	    # -----------------------------------------------------
+
+	    "payment_intent_data[metadata][payment_collection]":
+		payment_collection_name,
+
+	    "payment_intent_data[metadata][customer_name]":
+		customer_name
+	}
+        # ---------------------------------------------------------
+        # CREATE PAYMENT LINK
+        # ---------------------------------------------------------
+
+        response = requests.post(
+
+            stripe_url,
+
+            headers=headers,
+
+            data=data,
+
+            timeout=60
+        )
+
+        # ---------------------------------------------------------
+        # STRIPE ERROR
+        # ---------------------------------------------------------
+
+        if response.status_code != 200:
+
+            print(
+                f"[{payment_collection_name}] "
+                f"Stripe HTTP Error: "
+                f"{response.status_code}"
+            )
+
+            print(
+                f"[{payment_collection_name}] "
+                f"Stripe Response: "
+                f"{response.text}"
+            )
+
+            return {
+
+                "success":
+                    False,
+
+                "error":
+                    (
+                        f"HTTP {response.status_code}: "
+                        f"{response.text}"
+                    )
+            }
+
+        # ---------------------------------------------------------
+        # RESPONSE
+        # ---------------------------------------------------------
+
+        stripe_data = (
+            response.json()
+        )
+
+        payment_link = (
+            stripe_data.get(
+                "url"
+            )
+        )
+
+        payment_link_id = (
+            stripe_data.get(
+                "id"
+            )
+        )
+
+        # ---------------------------------------------------------
+        # VALIDATE URL
+        # ---------------------------------------------------------
+
+        if not payment_link:
+
+            return {
+
+                "success":
+                    False,
+
+                "error":
+                    (
+                        "Stripe did not return "
+                        "Payment Link URL."
+                    )
+            }
+
+        # ---------------------------------------------------------
+        # SUCCESS
+        # ---------------------------------------------------------
+
+        return {
+
+            "success":
+                True,
+
+            "payment_collection":
+                payment_collection_name,
+
+            "payment_link":
+                payment_link,
+
+            "payment_link_id":
+                payment_link_id,
+
+            "amount":
+                total_amount
+        }
+
+    except Exception:
+
+        return {
+
+            "success":
+                False,
+
+            "error":
+                (
+                    "Exception while creating Stripe "
+                    "Payment Link:\n"
+                    f"{__import__('traceback').format_exc()}"
+                )
+        }
+        
