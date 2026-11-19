@@ -1059,7 +1059,7 @@ def create_documents_from_stripe_payload(payload=None):
     # Company
     # -----------------------------------------
 
-    company = "Go Green Cleaning Solution"
+    company = "Go Green Cleaning Services"
 
     # -----------------------------------------
     # Check Duplicate Payment
@@ -1360,7 +1360,7 @@ def oldd_create_documents_from_stripe_payload(payload):
     stripe_charge_id = payload.get("id")
     currency = "AED"
 
-    company = "Go Green Cleaning Solution"
+    company = "Go Green Cleaning Services"
 
     # -----------------------------------------
     # Check duplicate payment
@@ -1508,7 +1508,7 @@ def create_documents_from_stripe():
     stripe_charge_id = payload.get("id")
     currency = "AED"
 
-    company = "Go Green Cleaning Solution"
+    company = "Go Green Cleaning Services"
 
     # -----------------------------------------
     # Check duplicate payment
@@ -1938,6 +1938,12 @@ def create_monthly_sales_invoices_background(docname):
 
                     "JLT":
                         "Sales-JLT - GG",
+                        
+                    "Dubai Marina":
+                        "Sales-Dubai Marina - GG",
+                        
+                     "The Greens&Views":
+                        "Sales-Greens Car Wash - GG",
 
                     "Palm Jumeirah":
                         "Sales-Palm Jumeirah - GG",
@@ -1982,7 +1988,7 @@ def create_monthly_sales_invoices_background(docname):
                 # -----------------------------------------
 
                 si.company = (
-                    "Go Green Cleaning Solution"
+                    "Go Green Cleaning Services"
                 )
 
                 # -----------------------------------------
@@ -4640,6 +4646,12 @@ def old_create_partial_invoice_and_payment(customer_name):
 
             "JLT":
                 "Sales-JLT - GG",
+                
+            "Dubai Marina":
+                 "Sales-Dubai Marina - GG",
+                        
+             "The Greens&Views":
+                   "Sales-Greens Car Wash - GG",
 
             "Palm Jumeirah":
                 "Sales-Palm Jumeirah - GG",
@@ -7578,6 +7590,12 @@ def create_partial_sales_invoice(
 
         "JLT":
             "Sales-JLT - GG",
+            
+       "Dubai Marina":
+             "Sales-Dubai Marina - GG",
+                        
+        "The Greens&Views":
+               "Sales-Greens Car Wash - GG",
 
         "Palm Jumeirah":
             "Sales-Palm Jumeirah - GG",
@@ -10242,6 +10260,12 @@ def create_partial_invoice_and_payment(customer_name):
 
             "JLT":
                 "Sales-JLT - GG",
+                
+            "Dubai Marina":
+                  "Sales-Dubai Marina - GG",
+                        
+             "The Greens&Views":
+                   "Sales-Greens Car Wash - GG",
 
             "Palm Jumeirah":
                 "Sales-Palm Jumeirah - GG",
