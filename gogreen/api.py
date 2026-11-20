@@ -13222,4 +13222,18 @@ def create_single_payment_collection_link(
                     f"{__import__('traceback').format_exc()}"
                 )
         }
-        
+
+@frappe.whitelist()
+def get_cleaner_clusters():
+
+    cleaner_email = frappe.session.user
+
+    clusters = frappe.db.sql("""
+        SELECT DISTINCT parent
+        FROM `tabCleaner Assign`
+        WHERE cleaner_email_id = %s
+          AND parenttype = 'Cluster'
+        ORDER BY parent
+    """, (cleaner_email,), as_dict=True)
+
+    return [d.parent for d in clusters]       
